@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 failover)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.4.2 — фикс остатка R5: usage на всех терминальных исходах B-2; попытко-специфичный nodeId B-3; FR-011-триггер по Q-002 B-1; no-structured-output m4; humanise-порт m5; id ≤ 200 m1)
+> Status: Draft (rev.4.3 — фикс остатка R6: usage на cancelled B-2; граница id=200 с худшим случаем 10-значного seq; FR-002 лимит 200; явный assert ClampRow; «контентные» выведены)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -193,7 +193,9 @@ type SeamOutcome =
   | { kind: "timeout"; usage?: UsageTotals }                       // timed_out (хост, usage может быть);
                                                                    // локальный grace — usage НЕТ (= unknown)
   | { kind: "interrupted"; usage?: UsageTotals }                   // interrupted
-  | { kind: "cancelled" }                                          // cancelled / dispose (usage не ждём)
+  | { kind: "cancelled"; usage?: UsageTotals }                       // терминал aborted (адаптер прикладывает
+                                                                   // usage без гейта по статусу — B-2-R6);
+                                                                   // локальный dispose-resolve — usage НЕТ (= unknown)
   | { kind: "unavailableContext" }                                 // unavailable_context
   | { kind: "hostError"; code: string; message: string;
       modelAttributable: boolean; usage?: UsageTotals };  // остальное: invalid_request,
@@ -228,10 +230,11 @@ runFanout(deps: FanoutDeps): Promise<FanoutResult | DegradationRefusal>;
   prompt-template-bridge.js:232-236/:278/:349; re-dispatch со «старым» nodeId после
   локального таймаута почти гарантированно получает duplicate_node → failed без
   failover — ломался главный путь timeout→failover FR-011). task.id валидируется
-  заранее: ≤ 200 символов (m1-R5: полный requestId при id=200 ≈ 231 ≤ 256 —
-  «fusion-»7 + id + «-a12-»5 + seq ≤ 6 + «-»1 + ts 13; мост
-  slash/delegation-request.js:28-44 отклоняет requestId > 256 МОЛЧА — молча
-  теряется и :cancel), без CR/LF, иначе run() висит до grace (M9-R3;
+  заранее: ≤ 200 символов (m1-R5, уточнено R6: худший случай при id=200 —
+  «fusion-»7 + id 200 + «-a12-»5 + seq 10 ЦИФР + «-»1 + ts 13 = 236 ≤ 256 —
+  запас даже при 10-значном счётчике fan-out'ов, что недостижимо до R8-сатурации
+  кэша ≈512 вызовов; мост slash/delegation-request.js:28-44 отклоняет requestId > 256
+  МОЛЧА — молча теряется и :cancel), без CR/LF, иначе run() висит до grace (M9-R3;
   отклонение от атомика, который id не ограничивает — TD-007); `ownerRunId =
   "fusion-<seq>-<ts>"` (единый на fan-out, как в PLAN F05),
   `agent: "fusion-worker"`, `context: "fresh"`, `cwd` сессии, `model` из ротации,
@@ -326,7 +329,7 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   (failover-exhausted). Если другой модели с ёмкостью НЕТ (в т.ч. единственная модель
   в ротации) — задача немедленно `failed` с ИСХОДНОЙ причиной (timeout/interrupted/…),
   вызов продолжается; очередь НЕ дренируется (B1/B2-R3: отказ одной задачи — не отказ
-  вызова, US-001/NFR-005). Контентные отказы не подменяются (см. таблицу статусов).
+  вызова, US-001/NFR-005). Не-модельные отказы не подменяются (см. таблицу статусов).
 - **Ре-отправка после терминала** (M13-R3, уточнено B-3-R5): duplicate_node между
   попытками исключён ПОСТРОЕНИЕМ — nodeId попытко-специфичен (см. Request); правило
   микротаски сохраняется как гигиена реентерабельности (не ре-emit синхронно внутри
@@ -486,9 +489,9 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
    при регистрации, активный набор = declared set и управляется setActiveTools (B5-R3);
    live-проверка в smoke (§11). Wiring config-bridge.
 9. E2E на fake-pi, два сценария (B2-R3): (а) 5 задач / **width requested 3 →
-   фактическая 2** (per-model cap 2 при одной модели — кламп проверяется явно,
-   N-R4) / 1 модель (timeout задачи → failed(timeout), вызов продолжается БЕЗ
-   failover); (б) 5 задач / width 3 / **2 модели** (failover-путь:
+   фактическая 2** (per-model cap 2 при одной модели; ЯВНЫЙ assert ClampRow
+   {field:"perModel", requested:3, applied:2} — n3-R6) / 1 модель (timeout задачи →
+   failed(timeout), вызов продолжается БЕЗ failover); (б) 5 задач / width 3 / **2 модели** (failover-путь:
    timeout→другая модель→done; 429→исключение модели) + микс исходов: done, no_changes,
    failed, needs_orchestrator, schema-failed→ретрай ok, Esc-отмена.
 10. README спеки-уровня: ручная проверка до F02.
@@ -498,7 +501,8 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 ### Unit / Component (fake-pi, fake timers, response-гейты)
 
 - Валидация: все ветки FR-002 (в т.ч. 16/17 задач, contract-объект, unknown-поля).
-- Клампы: каждый фактор цепочки; порядок строк; отсутствие maxWorkers → нет maxWorkers-строки.
+- Клампы: каждый фактор цепочки; порядок строк; отсутствие maxWorkers → нет maxWorkers-строки;
+  E2E(а): ровно одна строка ClampRow {field:"perModel", requested:3, applied:2} (n3-R6).
 - Расписание: FIFO при width < tasks; per-model ≤2 при 1/2/3 моделях; round-robin.
 - Дренаж: единственная модель + подтверждённый 429 (rate_limited) → очередь
   failed(no-available-model), вызов завершается; НО timeout на единственной модели

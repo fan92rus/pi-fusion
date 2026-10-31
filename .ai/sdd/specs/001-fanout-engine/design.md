@@ -154,7 +154,8 @@ interface TaskResult {
   error?: string;        // machine-code: timeout | max_steps | schema-missing | acceptance-failed |
                          // seam-unavailable | no-available-model | failover-exhausted | host:<code>
   schemaMissing?: boolean;
-  attempts: number;      // запусков воркера по задаче (1..3), для FR-011
+  attempts: number;      // запусков воркера по задаче (0..3, 0 = не была запущена —
+                         // пустая ротация/дренаж; для FR-011)
   turns?: number;        // Σ терминальных usage.turns ПО ВСЕМ попыткам; отсутствие = unknown (не 0!)
   turnsObserved?: number; // последний :update-снимок ПОСЛЕДНЕЙ попытки (снимки per-attempt,
                           // delegation.d.ts:44-47); fallback для barren-детектора F19
@@ -171,8 +172,8 @@ interface UsageTotals { input?: number; output?: number; cacheRead?: number;
 interface ProgressSnapshot { input: number; output: number; cacheRead: number;
                              cacheWrite: number; turns: number }
 
-interface ClampRow { field: "maxParallel" | "maxWorkers" | "tasks" | "perModel";
-                     requested: number; applied: number; reason: string }
+interface ClampRow { field: "maxParallel" | "tasks" | "perModel" | "noModels";
+                     requested: number; applied: number; reason: string } // noModels — пустая ротация (B-FINAL); «maxWorkers» удалён (MINOR-2-R8: ни один фактор его не производит)
 interface FanoutResult { results: TaskResult[]; clamps: ClampRow[]; usage: UsageTotals;
                          usagePartial: boolean } // usagePartial: хоть одна задача без терминального usage
 ```
@@ -519,7 +520,9 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
   failed(no-available-model), вызов завершается; НО timeout на единственной модели
   дренирования НЕ даёт (задача failed, остальные живут — B1-R3 тест);
   **пустая ротация** `workerModels: []` → все failed(no-available-model) сразу,
-  тест с fake-таймерами: после тиков вперёд очередь НЕ оживает и вызов завершён (B-FINAL).
+  тест с fake-таймерами: после тиков вперёд очередь НЕ оживает и вызов завершён;
+  asserts: 0 эмитов `:request`, у каждой задачи error === "no-available-model",
+  attempts = 0, ClampRow {noModels, requested, applied: 0} (NIT-1-R8).
 - Failover: триггеры (timeout/interrupted/hostError attributable), кап 2 подмен,
   смена модели, continuation-бриф содержит причину и запрет пере-делки, non-модельные
   отказы НЕ подменяются; timeout НЕ исключает модель из ротации (B1-R3); **B-3-R5**:

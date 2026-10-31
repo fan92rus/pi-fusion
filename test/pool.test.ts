@@ -441,11 +441,16 @@ describe("result assembly (FR-005)", () => {
     expect(t4).toMatchObject({ status: "failed", error: "timeout" });
     expect(t4?.summary).toContain("taskTimeoutMs");
     expect(t5).toMatchObject({ status: "failed", error: "interrupted" });
+    // FR-007 (agreed edit, pi-fusion-hi7): structured_output_failed gets one
+    // corrective run on the same model (t6#a2); its default answer is failed.
+    const t6First = pi.host.requests.find((request) => request.nodeId === "t6#a1");
+    expect(pi.host.requests.find((request) => request.nodeId === "t6#a2")?.model).toBe(
+      t6First?.model,
+    );
     expect(t6).toMatchObject({
       status: "failed",
-      error: "schema-missing",
-      schemaMissing: true,
-      attempts: 1,
+      error: "host:failed",
+      attempts: 2,
     });
     expect(t7).toMatchObject({ status: "failed", error: "seam-unavailable" });
     expect(t8).toMatchObject({ status: "failed", error: "max_steps" });

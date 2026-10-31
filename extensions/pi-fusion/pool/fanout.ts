@@ -33,6 +33,7 @@
  */
 import { renderBrief } from "../briefs.ts";
 import type { ValidatedFusionCall, ValidatedTask } from "../contract/validate.ts";
+import { runReportRetry } from "../report/retry.ts";
 import type { FanoutSeamClient, SeamOutcome } from "../seam/client.ts";
 import type { ClampRow, FanoutResult, TaskResult, UsageTotals } from "../types.ts";
 
@@ -282,6 +283,10 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
   const attempts = new Array<number>(tasks.length).fill(0);
   const observedTurns: Array<number | undefined> = new Array(tasks.length).fill(undefined);
   const attemptUsage: Array<UsageTotals | undefined> = new Array(tasks.length).fill(undefined);
+  // First-attempt budgets, carried into the FR-007 corrective run (same limits).
+  const attemptBudget: Array<{ timeoutMs: number; hardToolBudget: number } | undefined> = new Array(
+    tasks.length,
+  ).fill(undefined);
   const queue = tasks.map((task, index) => ({ task, index }));
   const launches: Array<Promise<void>> = [];
   let running = 0;
@@ -334,21 +339,54 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
     windowStreak.set(model, 0);
   };
 
+  /** Releases the model slot and records the task's final row. */
+  const finish = (
+    index: number,
+    model: string,
+    row: TaskResult,
+    usage: UsageTotals | undefined,
+  ): void => {
+    running = Math.max(0, running - 1);
+    runningByModel.set(model, Math.max(0, (runningByModel.get(model) ?? 0) - 1));
+    attemptUsage[index] = usage;
+    results[index] = row;
+    dispatch();
+  };
+
   const settle = (
     task: ValidatedTask,
     index: number,
     model: string,
     outcome: SeamOutcome,
-  ): void => {
-    running = Math.max(0, running - 1);
-    runningByModel.set(model, Math.max(0, (runningByModel.get(model) ?? 0) - 1));
+  ): Promise<void> | void => {
     accountWindow(model, outcome);
+    if (outcome.kind === "schemaFailed") {
+      // FR-007 / TD-004: one corrective run on the same model; the slot stays
+      // held until it settles. Its window outcome is not counted (Q-002).
+      const budget = attemptBudget[index];
+      if (budget === undefined) {
+        throw new Error(`task ${task.id} settled without a launch budget`);
+      }
+      return runReportRetry(client, {
+        taskId: task.id,
+        firstOutcome: outcome,
+        model,
+        violatedFields: [],
+        attemptTimeoutMs: budget.timeoutMs,
+        hardToolBudget: budget.hardToolBudget,
+      }).then((retried) => {
+        finish(index, model, retried.result, retried.usage);
+      });
+    }
     // unavailableContext answers without a child — no usage exists (§5).
     const usage = outcome.kind === "unavailableContext" ? undefined : outcome.usage;
-    attemptUsage[index] = usage;
     const launched = attempts[index] ?? 0;
-    results[index] = resultFromOutcome(task, outcome, launched, observedTurns[index], usage);
-    dispatch();
+    finish(
+      index,
+      model,
+      resultFromOutcome(task, outcome, launched, observedTurns[index], usage),
+      usage,
+    );
   };
 
   const launch = (entry: { task: ValidatedTask; index: number }, model: string): void => {
@@ -356,27 +394,28 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
     attempts[index] = 1;
     running += 1;
     runningByModel.set(model, (runningByModel.get(model) ?? 0) + 1);
+    const timeoutMs = Math.min(
+      task.timeoutMs ?? config.taskTimeoutMs,
+      BUDGET_CEILING_FACTOR * config.taskTimeoutMs,
+    );
+    const hardToolBudget = Math.min(
+      task.maxSteps ?? config.maxSteps,
+      BUDGET_CEILING_FACTOR * config.maxSteps,
+    );
+    attemptBudget[index] = { timeoutMs, hardToolBudget };
     launches.push(
       client
         .run({
           nodeId: `${task.id}#a1`,
           task: renderBrief(task, call.contract),
           model,
-          timeoutMs: Math.min(
-            task.timeoutMs ?? config.taskTimeoutMs,
-            BUDGET_CEILING_FACTOR * config.taskTimeoutMs,
-          ),
-          hardToolBudget: Math.min(
-            task.maxSteps ?? config.maxSteps,
-            BUDGET_CEILING_FACTOR * config.maxSteps,
-          ),
+          timeoutMs,
+          hardToolBudget,
           onProgress: (snapshot) => {
             observedTurns[index] = snapshot.turns;
           },
         })
-        .then((outcome) => {
-          settle(task, index, model, outcome);
-        }),
+        .then((outcome) => settle(task, index, model, outcome)),
     );
   };
 

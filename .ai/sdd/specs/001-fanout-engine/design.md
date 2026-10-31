@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 failover)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.4.1 — фикс остатка R4: единый критерий исключения модели Q-002 в 4 местах; title-нормализация; E2E requested/factual width; точные пути шовных файлов)
+> Status: Draft (rev.4.2 — фикс остатка R5: usage на всех терминальных исходах B-2; попытко-специфичный nodeId B-3; FR-011-триггер по Q-002 B-1; no-structured-output m4; humanise-порт m5; id ≤ 200 m1)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -78,7 +78,7 @@ flowchart TD
     FO -- попытки исчерпаны / нет модели --> F2[failed: failover-exhausted / no-available-model]
     FO --> C
     C -- cancelled --> F3[cancelled]
-    C -- hostError контентный --> F4[failed: host:code]
+    C -- hostError не-модельный --> F4[failed: host:code]
     F1 --> S
     F2 --> S
     F3 --> S
@@ -189,15 +189,21 @@ interface FanoutSeamClient {
 }
 type SeamOutcome =
   | { kind: "report"; report: WorkerReport; usage?: UsageTotals }  // completed
-  | { kind: "schemaFailed" }                                       // structured_output_failed → FR-007
-  | { kind: "timeout" }                                            // timed_out ИЛИ локальный grace
-  | { kind: "interrupted" }                                        // interrupted
-  | { kind: "cancelled" }                                          // cancelled / dispose
+  | { kind: "schemaFailed"; usage?: UsageTotals }                  // structured_output_failed → FR-007
+  | { kind: "timeout"; usage?: UsageTotals }                       // timed_out (хост, usage может быть);
+                                                                   // локальный grace — usage НЕТ (= unknown)
+  | { kind: "interrupted"; usage?: UsageTotals }                   // interrupted
+  | { kind: "cancelled" }                                          // cancelled / dispose (usage не ждём)
   | { kind: "unavailableContext" }                                 // unavailable_context
   | { kind: "hostError"; code: string; message: string;
-      modelAttributable: boolean };   // остальное: invalid_request, duplicate_node,
-                                      // tool_budget_exhausted, 429/overload/… ; modelAttributable
-                                      // = true если code/message матчит 429|rate.?limit|overload|quota
+      modelAttributable: boolean; usage?: UsageTotals };  // остальное: invalid_request,
+                                  // duplicate_node, tool_budget_exhausted, no-structured-output,
+                                  // 429/overload/…; modelAttributable = true по классификации ниже:
+                                  // структурный rate_limited ИЛИ case-insensitive substring
+                                  // 429/overload/rate-limit/quota (единый список Q-002).
+                                  // B-2-R5: адаптер прикладывает usage к ЛЮБОМУ терминальному
+                                  // ответу при наличии child.usage (delegation-adapters.js ~:292-303,
+                                  // гейта по статусу нет) — отбрасывать его вне report занижало Σ (FR-010)
 ```
 
 ```ts
@@ -216,10 +222,18 @@ runFanout(deps: FanoutDeps): Promise<FanoutResult | DegradationRefusal>;
 ### Seam Protocol (§5 детально)
 
 - **Request** — `pi.events.emit("prompt-template:subagent:request", …)`:
-  `requestId = "fusion-<task.id>-<seq>-<ts>"` — task.id валидируется заранее: ≤ 256
-  символов, без CR/LF, иначе мост МОЛЧА не ответит и run() висит до grace (M9-R3;
+  `requestId = "fusion-<task.id>-a<attempt>-<seq>-<ts>"` и
+  `nodeId = "<task.id>#a<attempt>"` — оба ЗАВИСЯТ ОТ НОМЕРА ПОПЫТКИ (B-3-R5: мост
+  держит activeOwnedNodes вплоть до `finally` после фактического завершения ребёнка —
+  prompt-template-bridge.js:232-236/:278/:349; re-dispatch со «старым» nodeId после
+  локального таймаута почти гарантированно получает duplicate_node → failed без
+  failover — ломался главный путь timeout→failover FR-011). task.id валидируется
+  заранее: ≤ 200 символов (m1-R5: полный requestId при id=200 ≈ 231 ≤ 256 —
+  «fusion-»7 + id + «-a12-»5 + seq ≤ 6 + «-»1 + ts 13; мост
+  slash/delegation-request.js:28-44 отклоняет requestId > 256 МОЛЧА — молча
+  теряется и :cancel), без CR/LF, иначе run() висит до grace (M9-R3;
   отклонение от атомика, который id не ограничивает — TD-007); `ownerRunId =
-  "fusion-<seq>-<ts>"` (единый на fan-out, как в PLAN F05), `nodeId = task.id`,
+  "fusion-<seq>-<ts>"` (единый на fan-out, как в PLAN F05),
   `agent: "fusion-worker"`, `context: "fresh"`, `cwd` сессии, `model` из ротации,
   `timeoutMs = min(task.timeoutMs ?? cfg.taskTimeoutMs, 4 × cfg.taskTimeoutMs)` (потолок
   атомика), `toolBudget: { hard: min(task.maxSteps ?? cfg.maxSteps, 4 × cfg.maxSteps),
@@ -244,17 +258,20 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
 | `timed_out` | details.timedOut / child.timedOut | `timeout` | failover FR-011; модель НЕ исключается из ротации (B1-R3) |
 | `structured_output_failed` | child.structuredOutputFailed | `schemaFailed` | ретрай FR-007 (та же модель) |
 | `tool_budget_exhausted` | child.toolBudgetBlocked | `hostError(false)` | failed max_steps (код унифицирован — N2-R3) |
-| `acceptance_failed` | acceptance.status="rejected" && explicit | `hostError(false)` | failed host:acceptance-failed; БЕЗ failover. Недостижим в нашей конфигурации: адаптер всегда шлёт acceptance:false (delegation-adapters.js:182) — строка defense-in-depth (M5-R3) |
+| `acceptance_failed` | acceptance.status="rejected" && explicit | `hostError(false)` | failed host:acceptance-failed; БЕЗ failover. Не достигается при acceptance:false в запросе (адаптер :182); исполнитель (child.acceptance) не проверен (m6-R5) — строка defense-in-depth |
 | `interrupted` | stopped/interrupted | `interrupted` | failover FR-011 |
 | `completed` | иначе | `report` (при валидном отчёте) | результат |
-| `unavailable_context` | invalid response | `unavailableContext` | mid-run: per-task failed seam-unavailable (FR-009), без failover |
+| `completed` без structuredOutput | адаптер :257-258 → failed (НЕ structured_output_failed) | `hostError(false)` | failed host:no-structured-output; БЕЗ ретрая (m4-R5: ретрай FR-007 таргетит нарушение схемы произведённого отчёта; отсутствие вывода при completed — аномалия хоста, честный failed) |
+| `unavailable_context` | нет активного контекста (мост :246) или identity capacity saturated (мост :223) — не «invalid response» (m2-R5) | `unavailableContext` | mid-run: per-task failed seam-unavailable (FR-009), без failover |
 | `invalid_request` | malformed request | `hostError(false)` | failed host:invalid_request |
 | `duplicate_node` | узел ещё активен | `hostError(false)` | failed host:duplicate_node (баг оркестратора) |
 
   Классификация modelAttributable (M5-R3): ПЕРВИЧНЫЙ признак структурный —
   `providerDiagnostics.lastError.kind === "rate_limited"` (поле терминального ответа,
-  delegation.d.ts:57-64, :110); вторичный — текст ошибки (429/overload/rate.?limit/quota —
-  канонический список Q-002, ЕДИНЫЙ с §4 Pool и FR-011). Квоту/биллинг классификатор
+  delegation.d.ts:57-64, lastError :59-60; классификатор шва —
+  shared/provider-diagnostics.js: «Too many requests» → rate_limited — n1-R5);
+  вторичный — case-insensitive substring 429/overload/rate-limit/quota (канонический
+  литеральный список Q-002, ЕДИНЫЙ с §4 Pool и FR-011). Квоту/биллинг классификатор
   хоста отдаёт как `unknown` — решаем по тексту. Статусам сама по себе модельность
   не приписывается.
 - **Приоритет статусов** (minor 9): терминальное состояние рантайма (`cancelled`,
@@ -267,7 +284,12 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   и без него, bridge:305-310) turnsObserved НЕ обновляет (M6-R3).
 - **Usage** — только терминальный `usage` ответа (`authoritative` по мосту; поля
   input/output/cacheRead/cacheWrite/cost/turns/toolCalls/durationMs — по шву): падает в
-  `SeamOutcome.report.usage`; агрегация по попыткам — Σ; отсутствие = unknown (FR-010).
+  `usage` ЛЮБОГО терминального варианта SeamOutcome (report/schemaFailed/timeout/
+  interrupted/hostError — B-2-R5); локальный grace-timeout без терминального ответа —
+  usage отсутствует (= unknown). Агрегация по попыткам — Σ; отсутствие = unknown
+  (FR-010). Нюанс адаптера (m3-R5): `toolCalls`/`durationMs` заполняются как
+  `progress?.toolCount ?? 0` / `?? 0` — 0 означает «нет данных»; в usagePartial
+  эти два поля не участвуют.
 - **Dispose** — в `finally` вызова тула: отписки + resolve всех pending `run()` как
   `{kind:"cancelled"}` — семантика из ТРЕБОВАНИЯ F12 («прерванные — cancelled»);
   council-прецедент резолвит pending как failed — отклоняем сознательно, прерванное
@@ -305,11 +327,13 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   в ротации) — задача немедленно `failed` с ИСХОДНОЙ причиной (timeout/interrupted/…),
   вызов продолжается; очередь НЕ дренируется (B1/B2-R3: отказ одной задачи — не отказ
   вызова, US-001/NFR-005). Контентные отказы не подменяются (см. таблицу статусов).
-- **Ре-отправка после терминала** (M13-R3): терминальный ответ шва приходит РАНЬШЕ,
-  чем мост освобождает nodeId (`finally`); шина событий синхронная → ре-dispatch той
-  же задачи разрешён ТОЛЬКО через продолжение Promise (микротаску), не синхронно в
-  обработчике `:response` — иначе `duplicate_node`. Поздний `:response` после локального
-  таймаута игнорируется (pending удалён в момент таймаута, паттерн council:121-125).
+- **Ре-отправка после терминала** (M13-R3, уточнено B-3-R5): duplicate_node между
+  попытками исключён ПОСТРОЕНИЕМ — nodeId попытко-специфичен (см. Request); правило
+  микротаски сохраняется как гигиена реентерабельности (не ре-emit синхронно внутри
+  обработчика `:response`). Поздний `:response` предыдущей попытки (в т.ч. терминал
+  `cancelled` после :cancel при локальном таймауте) игнорируется — pending удалён в
+  момент таймаута, маршрутизация по попытко-специфичному requestId (паттерн
+  council:121-125).
 - **FIFO**: очередные задачи в порядке индексов; релиз слота — триггер dispatch.
 
 ### Brief и continuation-бриф (briefs.ts)
@@ -397,9 +421,11 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 - **Authorization:** воркер ограничен allowlist агента + `toolBudget.block` +
   обязательный `hard` (B1) — рекурсия и бездонные budgets исключены.
 - **Input validation:** TypeBox-объекты (не JSON-строки как в атомике — отклонение,
-  TD-007(г)); 1..16, dup id, id ≤ 256/без CR-LF (правило шва, M9-R3), `instructions`
+  TD-007(г)); 1..16, dup id, id ≤ 200/без CR-LF (полный requestId ≤ 256 — правило шва, m1-R5/M9-R3), `instructions`
   ≤ 32 000, `files` ≤ 32 непустых, `maxWorkers` ≥ 1 без верхнего предела, `title`
-  дефолт = humanised id (N3-R3, порт), `etaSeconds` принимается и игнорируется явно;
+  дефолт = humaniseTaskId(id) — порт дословно (delegate-args.ts:157-162, m5-R5):
+  `id.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()`, пустой результат → id
+  как есть; `etaSeconds` принимается и игнорируется явно;
   неизвестные поля задач ОТКЛОНЯЮТСЯ (атомик игнорирует — TD-007(г), сознательно
   строже); отчёт — строгая схема с if/then (question); full port contract-валидатора
   (см. types.ts); `no_changes ⇒ filesChanged: []`.
@@ -423,7 +449,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 | Все workerModels заняты | ожидание релиза слота |
 | Единственная модель: timeout/interrupted задачи | задача failed с исходной причиной (failover-кандидата нет), модель остаётся в ротации, вызов продолжается (B1-R3) |
 | Единственная модель: подтверждённый 429 (rate_limited) | модель исключается → очередь дренится failed(no-available-model); бегущие дети дорабатывают штатно |
-| id > 256 символов или с CR/LF | ошибка валидации до fan-out (иначе мост молчит до grace — M9-R3) |
+| id > 200 символов (полный requestId > 256) или с CR/LF | ошибка валидации до fan-out (иначе мост молчит до grace — M9-R3, m1-R5) |
 | Failover: модель A умерла, модель B свободна | та же задача в голову FIFO, continuation-бриф, attempts+1 |
 | Failover: попытки исчерпаны (3) | failed(failover-exhausted) |
 | `structured_output_failed` | ретрай 1× та же модель, слот удержан → иначе failed+schemaMissing |
@@ -479,10 +505,12 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
   дренирования НЕ даёт (задача failed, остальные живут — B1-R3 тест).
 - Failover: триггеры (timeout/interrupted/hostError attributable), кап 2 подмен,
   смена модели, continuation-бриф содержит причину и запрет пере-делки, non-модельные
-  отказы НЕ подменяются; timeout НЕ исключает модель из ротации (B1-R3); пере-dispatch
-  через микротаску — синхронный ре-emit даёт duplicate_node (M13-R3); поздний
-  :response после таймаута игнорируется; turnsObserved per-attempt: после failover
-  не наследует старую попытку (M6-R3); TaskResult.turns = Σ попыток.
+  отказы НЕ подменяются; timeout НЕ исключает модель из ротации (B1-R3); **B-3-R5**:
+  fake-мост, освобождающий nodeId только после abort → failover-запрос с НОВЫМ
+  nodeId (task.id#a2) НЕ получает duplicate_node; поздний :response предыдущей
+  попытки (включая терминал cancelled после :cancel) игнорируется; usage упавшей
+  failover-попытки входит в Σ TaskResult.usage (B-2-R5); turnsObserved per-attempt:
+  после failover не наследует старую попытку (M6-R3); TaskResult.turns = Σ попыток.
 - Ретрай: structured_output_failed → 1 ретрай; слот удержан; schemaMissing после 2-го.
 - Шов-клиент: таймаут+grace → `:cancel` с телом {requestId, ownerRunId, nodeId};
   dispose резолвит pending; ignore-after-dispose; **полная таблица 11 статусов**
@@ -491,7 +519,9 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
   failover, текст 429 — failover, прочий текст — нет (M5-R3); usage: сумма только
   терминальных по попыткам, поля input/output/…/durationMs, `:update`-снимки не
   суммируются, turnsObserved фиксируется только при наличии usage в снимке, absent =
-  unknown (usagePartial); id > 256/CR-LF → отказ (M9-R3).
+  unknown (usagePartial); id > 200 (полный requestId > 256)/CR-LF → отказ (M9-R3,
+  m1-R5); completed без structuredOutput → failed host:no-structured-output без
+  ретрая (m4-R5).
 - Контракт-валидатор (порт): object; owners с неизвестной задачей / пустым путём;
   provides > 64 / неизвестный task / неверный kind (7 значений) / обрезка длинного
   shape (не отказ); requires {task известная, name непустая} (B3-R3); checks > 16 /
@@ -616,7 +646,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
   самодекларация 4-значная; рантайм-состояния — слой TaskResult; маппинг §4 result);
   (г) осознанные отклонения формы (M3/M9-R3): TypeBox-объекты вместо JSON-строк;
   неизвестные поля задач ОТКЛОНЯЮТСЯ (атомик игнорирует) — сознательно строже;
-  task.id ≤ 256/без CR-LF — требование шва, которого у атомика нет.
+  task.id ≤ 200 (полный requestId ≤ 256 — m1-R5)/без CR-LF — требование шва, которого у атомика нет.
 - **Why:** ревью R2: loose-проверка не даёт паритета F04; эквивалентность
   «no_changes ≡ done+пустой filesChanged» нечестна (не отличает отсутствие scope).
 - **Trade-off:** порт валидатора ~1 модуль; самодекларация no_changes доверяет
@@ -643,7 +673,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 | R1: API drift шва pi-subagents | Medium | High | pin версии; live smoke за флагом; FR-009; TD-002 примечание (structured в шве не имеет живого прецедента) |
 | R2: 429/квоты дешёвых моделей | Medium | Medium | per-model cap + ротация + failover FR-011 + attempt-кап |
 | R3: availability-чек не доказывает наличие слушателя шва | Medium | Medium | per-task timeout+grace ставит предел ожидания; live smoke; `:started` ≤10s после request → DEBUG warn (наблюдаемость); без блокирующего отказа |
-| R4: failover маскирует контентные ошибки | Medium | Medium | триггеры только модельных статусов; кап 2 подмен; attempts в результате |
+| R4: failover маскирует не-модельные ошибки | Medium | Medium | триггеры только модельных статусов; кап 2 подмен; attempts в результате |
 | R5: локальная нога: ширина не учитывает слоты llama-server (poolSize) | Low | Medium | риск зафиксирован; дефолт ширины оператора; учёт слотов — F18 (Phase 3) |
 | R6: 15s grace мало для долгой записи | Low | Low | константа в одном месте; правится одним диффом |
 | R7: fusion-worker.md отсутствует | Medium | Medium | hostError с диагностикой; установка F03/F14 |

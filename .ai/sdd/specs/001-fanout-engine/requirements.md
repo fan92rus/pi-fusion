@@ -1,6 +1,6 @@
 # Feature: fanout-engine (F04–F07, F09)
 
-> Status: Approved (2026-10-31; изменено после ревью R1/R2/R3: FR-002, FR-006, FR-008, FR-009, FR-010 уточнены, D-005 исправлен, добавлены FR-011 и Q-002 — одобрено владельцем)
+> Status: Approved (2026-10-31; изменено после ревью R1/R2/R3/R5: FR-002, FR-006, FR-008, FR-009, FR-010, FR-011, Q-002 — одобрено владельцем; R5: FR-011-триггер по единому критерию Q-002, FR-010 дополнен терминальным usage упавших попыток и нулями адаптера)
 > Source: @[../../PLAN.md] · @[../../ideas/001-fusion-mode-for-pi.md]
 > Last Updated: 2026-10-31
 
@@ -173,10 +173,13 @@ THE SYSTEM SHALL вернуть частичные результаты: зав�
 ### FR-010: Usage-агрегация — Must Have
 
 THE SYSTEM SHALL суммировать usage всех детей из терминальных ответов шва
-(authoritative; input/output/cacheRead/cacheWrite/turns/cost) и включать его в
+(authoritative; input/output/cacheRead/cacheWrite/turns/cost; usage прикладывается
+к ЛЮБОМУ терминальному исходу, включая упавшие попытки failover — адаптер шва
+не гейтит его по статусу, B-2-R5) и включать его в
 result тула; usage из `:update`-снимков НЕ суммируется (кумулятивные снимки —
 двойной счёт) и служит только живой диагностикой; отсутствие usage трактуется
-как «неизвестно», не как 0
+как «неизвестно», не как 0; нулевые `toolCalls`/`durationMs` от шва (адаптер
+ставит `?? 0`) означают «нет данных» — в usagePartial не участвуют (m3-R5)
 SO THAT totals сессии точны, а barren-детектор не путает «0 шагов» и «нет данных»;
 usage и turns суммируются по ВСЕМ попыткам задачи (включая failover-попытки);
 ДЛЯ barren-детектора (F19, спека 003): при отсутствии терминального usage движок
@@ -186,7 +189,9 @@ usage и turns суммируются по ВСЕМ попыткам задач�
 ### FR-011: Подмена модели без потери работы (model-failover) — Must Have
 
 WHEN задача завершается отказом, относимым к модели (`timed_out`, `interrupted`,
-hostError вида 429/overload/rate-limit/quota)
+hostError с modelAttributable = true — единый критерий Q-002: структурный
+providerDiagnostics.lastError.kind === "rate_limited" ИЛИ case-insensitive substring
+текста ошибки 429/overload/rate-limit/quota)
 THE SYSTEM SHALL пере-делегировать ТУ ЖЕ задачу другой модели из ротации с
 continuation-брифом (исходные instructions + причина отказа + указание
 «частичное состояние — на диске в scope files: проверь и доделай, не пере-делай»),
@@ -301,7 +306,7 @@ report-repair); ретрай отчёта дёшев и безопасен.
 | Version skew API шва pi-subagents | High | Smoke-проверка при старте; честная деградация FR-009 |
 | 429/квоты дешёвых моделей | Medium | FR-004 cap + ротация; отказ per-task, не вызова |
 | Кривые отчёты дешёвых моделей | Medium | FR-007 ретрай; failed с пометкой, не тишина |
-| Подмена модели (FR-011) маскирует контентные ошибки | Medium | кап 2 подмены; триггеры — только модельные отказы, не schema/needs_orchestrator |
+| Подмена модели (FR-011) маскирует не-модельные ошибки | Medium | кап 2 подмены; триггеры — только модельные отказы, не schema/needs_orchestrator |
 
 ## Glossary
 
@@ -320,11 +325,12 @@ report-repair); ретрай отчёта дёшев и безопасен.
 **Answer:** статусы `timed_out`, `interrupted` и hostError с признаками модельной
 вины. Классификация: первичный структурный признак —
 `providerDiagnostics.lastError.kind === "rate_limited"` (поле терминального ответа
-шва); вторичный — текст ошибки (429/overload/rate-limit/quota). Контентные и
-контрактные отказы (schema-missing, needs_orchestrator, invalid_request,
-tool_budget_exhausted, acceptance_failed, cancelled) подмене не подлежат — подмена
-не чинит их причину. Исключение модели из ротации до конца вызова — ТОЛЬКО при
-подтверждённом квотном отказе; `timeout`/`interrupted` модель не исключают.
+шва); вторичный — текст ошибки (429/overload/rate-limit/quota). Отказы БЕЗ
+подмены: schema-missing, needs_orchestrator, invalid_request, tool_budget_exhausted,
+acceptance_failed, cancelled — подмена не чинит их причину; термин «контентный
+отказ» далее не используется (n2-R5). Исключение модели из ротации до
+конца вызова — ТОЛЬКО при подтверждённом квотном отказе; `timeout`/`interrupted`
+модель не исключают.
 **Decision:** FR-011.
 
 ## Open Questions

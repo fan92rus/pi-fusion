@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 failover)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.4.3 — фикс остатка R6: usage на cancelled B-2; граница id=200 с худшим случаем 10-значного seq; FR-002 лимит 200; явный assert ClampRow; «контентные» выведены)
+> Status: Draft (rev.4.4 — вердикт R7 ГОДЕН; закрыты его миноры/нитсы: usage-проза с cancelled, FR-010 Esc-исключение, maxWorkers-строка, maxParallel в E2E, метки унифицированы)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -194,7 +194,7 @@ type SeamOutcome =
                                                                    // локальный grace — usage НЕТ (= unknown)
   | { kind: "interrupted"; usage?: UsageTotals }                   // interrupted
   | { kind: "cancelled"; usage?: UsageTotals }                       // терминал aborted (адаптер прикладывает
-                                                                   // usage без гейта по статусу — B-2-R6);
+                                                                   // usage без гейта по статусу — B-2-R5);
                                                                    // локальный dispose-resolve — usage НЕТ (= unknown)
   | { kind: "unavailableContext" }                                 // unavailable_context
   | { kind: "hostError"; code: string; message: string;
@@ -288,7 +288,9 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
 - **Usage** — только терминальный `usage` ответа (`authoritative` по мосту; поля
   input/output/cacheRead/cacheWrite/cost/turns/toolCalls/durationMs — по шву): падает в
   `usage` ЛЮБОГО терминального варианта SeamOutcome (report/schemaFailed/timeout/
-  interrupted/hostError — B-2-R5); локальный grace-timeout без терминального ответа —
+  interrupted/hostError/cancelled — B-2-R5/R7; единственное исключение —
+  `unavailableContext`: ответ моста без child, usage не несёт — MINOR-1-R7);
+  локальный grace-timeout без терминального ответа —
   usage отсутствует (= unknown). Агрегация по попыткам — Σ; отсутствие = unknown
   (FR-010). Нюанс адаптера (m3-R5): `toolCalls`/`durationMs` заполняются как
   `progress?.toolCount ?? 0` / `?? 0` — 0 означает «нет данных»; в usagePartial
@@ -306,7 +308,8 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   `width = min(W_req, tasks.length, cfg.maxParallel, capacity)`. Факторы применяются
   в порядке `maxParallel → perModel → tasks`; в ClampRow `requested` = ширина ДО
   применения данного фактора, `applied` = ПОСЛЕ (первый сверяется с W_req).
-  Поле `maxWorkers` получает строку, только если `maxWorkers` задан явно и понижен.
+  Отдельной «maxWorkers»-строки НЕТ (MINOR-3-R7: ни один фактор её не производит) —
+  исходный W_req виден как `requested` первой строки.
   Пример: maxWorkers=9, models=2 → `[{perModel, requested:9, applied:4}]`.
 - **Расписание**: dispatch при `running < width` **и** существует модель
   `m ∈ activeModels` с `runningByModel[m] < 2`; иначе ожидание релиза слота.
@@ -489,7 +492,8 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
    при регистрации, активный набор = declared set и управляется setActiveTools (B5-R3);
    live-проверка в smoke (§11). Wiring config-bridge.
 9. E2E на fake-pi, два сценария (B2-R3): (а) 5 задач / **width requested 3 →
-   фактическая 2** (per-model cap 2 при одной модели; ЯВНЫЙ assert ClampRow
+   фактическая 2** (cfg.maxParallel ≥ 3, чтобы единственным фактором клампа был
+   perModel — MINOR-3-R7; ЯВНЫЙ assert ClampRow
    {field:"perModel", requested:3, applied:2} — n3-R6) / 1 модель (timeout задачи →
    failed(timeout), вызов продолжается БЕЗ failover); (б) 5 задач / width 3 / **2 модели** (failover-путь:
    timeout→другая модель→done; 429→исключение модели) + микс исходов: done, no_changes,
@@ -501,7 +505,8 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 ### Unit / Component (fake-pi, fake timers, response-гейты)
 
 - Валидация: все ветки FR-002 (в т.ч. 16/17 задач, contract-объект, unknown-поля).
-- Клампы: каждый фактор цепочки; порядок строк; отсутствие maxWorkers → нет maxWorkers-строки;
+- Клампы: каждый фактор цепочки; порядок строк; отдельной maxWorkers-строки нет,
+  W_req = requested первой строки (MINOR-3-R7);
   E2E(а): ровно одна строка ClampRow {field:"perModel", requested:3, applied:2} (n3-R6).
 - Расписание: FIFO при width < tasks; per-model ≤2 при 1/2/3 моделях; round-robin.
 - Дренаж: единственная модель + подтверждённый 429 (rate_limited) → очередь
@@ -681,7 +686,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 | R5: локальная нога: ширина не учитывает слоты llama-server (poolSize) | Low | Medium | риск зафиксирован; дефолт ширины оператора; учёт слотов — F18 (Phase 3) |
 | R6: 15s grace мало для долгой записи | Low | Low | константа в одном месте; правится одним диффом |
 | R7: fusion-worker.md отсутствует | Medium | Medium | hostError с диагностикой; установка F03/F14 |
-| R8: identity-кэш моста: settledAttempts ≥ 8192 → все новые запросы получают unavailable_context до конца сессии шва (M11-R3) | Low | Medium | детект: серия unavailable_context после работавших fan-out'ов → отказ с подсказкой «перезапусти сессию/шов»; сотни fan-out'ов в одной сессии — за пределами MVP |
+| R8: identity-кэш моста: settledAttempts ≥ 8192 → все новые запросы получают unavailable_context до конца сессии шва (M11-R3); ≈512 fan-out'ов — ВЕРХНЯЯ граница (8192 ÷ 16 задач при 1 попытке/задачу; повторные попытки уменьшают счётчик) | Low | Medium | детект: серия unavailable_context после работавших fan-out'ов → отказ с подсказкой «перезапусти сессию/шов»; сотни fan-out'ов в одной сессии — за пределами MVP |
 
 *Исправление R1-прецедента (rev.2): PLAN F05 приписывал агрегацию usage и
 structured-отчёты прецеденту council-delegation — в нём нет ни того, ни другого

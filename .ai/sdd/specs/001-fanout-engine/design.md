@@ -385,7 +385,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
   `no_changes` — ЯВНЫЙ статус (воркер самодекларирует «завершил, ничего не менял»);
   в атомике он выводится из фактов записи (declared-files.ts) — у нас нет write-op
   инструментирования, поэтому самодекларация (отклонение задокументировано в TD-007);
-  `max_steps ≡ failed(host:max_steps)`, `timeout ≡ failed(timeout)`, `queued` —
+  `max_steps ≡ failed(max_steps)`, `timeout ≡ failed(timeout)`, `queued` —
   внутренний, в результате не появляется (B7).
 - Тул возвращает `structuredContent` (outputSchema = FanoutResult), текстовую таблицу
   `id · status · summary · files` + clamp-строки + usage-строку (при `usagePartial` —

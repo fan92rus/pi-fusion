@@ -1,0 +1,50 @@
+{
+  "name": "pi-fusion",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Fusion mode for pi coding agent — a frontier lead plans and reviews, a pool of cheap fresh workers executes; one tool: fusion_delegate",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "fusion",
+    "multi-agent",
+    "fanout",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "author": "fan92rus",
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.52"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@types/node": "^22",
+    "typescript": "^5",
+    "vitest": "^5.0.5"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check extensions test",
+    "lint:fix": "biome check --write extensions test",
+    "build": "tsc -p tsconfig.build.json --noEmit",
+    "smoke:live": "node --experimental-strip-types scripts/smoke/live-smoke.mts"
+  }
+}

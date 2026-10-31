@@ -1,2 +1,4 @@
 .auto/
+.pi/
 node_modules/
+dist/

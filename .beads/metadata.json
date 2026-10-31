@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "pi_fusion",
+  "project_id": "f419edd7-af9b-40fd-83a6-20d058fbaab0"
+}

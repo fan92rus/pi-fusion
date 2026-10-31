@@ -328,8 +328,8 @@ report-repair); ретрай отчёта дёшев и безопасен.
 - **Воркер:** ephemeral fresh-субагент на дешёвой модели, исполняет одну задачу.
 - **Fan-out:** один вызов `fusion_delegate` с пулом задач.
 - **Шов:** delegation-события pi-subagents (request/response/update/cancel).
-- **Continuation-бриф:** бриф повторного запуска той же задачи на другой модели
-после модельного отказа (FR-011); непрерывность работы даёт состояние на диске.
+- **Окно rate-limit:** ≥5 подряд отказов модели класса «окно» (маркеры Q-002) →
+модель исключается из НОВЫХ запусков до конца вызова (FR-011); дети не отменяются.
 - **Barren fan-out:** фан-аут, в котором воркеры исполнили 0 шагов (метрика F19,
   вне этой спеки).
 
@@ -348,7 +348,7 @@ custom-provider.md:206).
 не трогается. Структурный признак `providerDiagnostics.lastError.kind ===
 "rate_limited"` вторичен: хост-классификатор отдаёт rate_limited и для «Too many
 requests», и для лимитов (shared/provider-diagnostics.js) — классы (1)/(2)
-различаются текстовыми маркерами. Отказы БЕЗ спасения: schema-missing
+различаются текстовыми маркерами. Не является отказом задачи: schema-missing
 (FR-007, та же модель), needs_orchestrator (Q-001), invalid_request,
 tool_budget_exhausted, acceptance_failed, cancelled. Термин «контентный отказ»
 не используется (n2-R5).

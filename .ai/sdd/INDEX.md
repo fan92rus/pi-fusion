@@ -9,7 +9,7 @@
 
 | # | Спека | Покрывает | Статус |
 |---|-------|-----------|--------|
-| 001 | fanout-engine | F04, F05, F06, F07, F09 (+FR-011 model-failover — часть F06) | design:draft |
+| 001 | fanout-engine | F04, F05, F06, F07, F09 (+FR-011 model-window — часть F06) | design:draft |
 | 002 | config-command-agent | F01, F02, F03, F08 | — |
 | 003 | lead-session-enforcement | F10, F11, F12, F13, F19, F20 | — |
 | 004 | config-menu | F14 | — |

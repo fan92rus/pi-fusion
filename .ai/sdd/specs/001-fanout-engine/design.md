@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 model-window)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.5.0 — решение владельца 2026-10-31: FR-011 переписан — окно rate-limit 429×5 → исключение модели + отмена её детей + перезапуск тех же задач с continuation-брифом; timeout/перегрузка — не вина модели; предшествующие — R1-R7 + финальное ревью пакета)
+> Status: Draft (rev.5.1 — финальное решение владельца 2026-10-31 после ресерча шва: окно rate-limit 429×5 → ТОЛЬКО исключение модели из НОВЫХ запусков; дети не отменяются, задачи не спасаются; timeout/перегрузка — не вина модели; предшествующие — R1-R7, финальное ревью пакета, rev.5.0)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -12,13 +12,13 @@ pi-subagents → пул ширины, который через шов спав�
 (агент `fusion-worker`, модель из ротации), собирает их структурные отчёты и
 возвращает агрегированный результат. Ключевые решения rev.2: полный маппинг всех
 статусов шва (`structured_output_failed` запускает ретрай отчёта FR-007; окно
-rate-limit 429×5 — исключение модели FR-011), `toolBudget.hard` обязателен
-(= `maxSteps`), usage — только из терминальных ответов (authoritative; `:update` —
-снимки, не дельты), отказ последней доступной модели осушает очередь немедленным
-failed (без дедлока), окно rate-limit = исключение модели + отмена её детей +
-перезапуск тех же задач с continuation-брифом (непрерывность — состояние на диске;
-живая смена модели у работающего ребёнка швом недоступна — future work, TD-006),
-dispose резолвит висящие промисы. Trade-off: ход лида блокируется
+rate-limit 429×5 — исключение модели из НОВЫХ запусков, FR-011), `toolBudget.hard`
+обязателен (= `maxSteps`), usage — только из терминальных ответов (authoritative;
+`:update` — снимки, не дельты), отказ последней доступной модели осушает очередь
+немедленным failed (без дедлока), дети исключённой модели не отменяются —
+дорабатывают естественно (завершившиеся принимаются); мимолётные 429 гасит
+агентный ретрай pi внутри сессии ребёнка; живая смена модели у работающего
+ребёнка швом недоступна — future work (TD-006), dispose резолвит висящие промисы. Trade-off: ход лида блокируется
 на весь fan-out (сознательно — паритет с atomic-agent); TUI живёт (Node event loop).
 
 ## 2. Requirements Mapping
@@ -35,7 +35,7 @@ dispose резолвит висящие промисы. Trade-off: ход лид
 | FR-008 таймауты/бюджет/изоляция | §4 seam/client.ts, §5 | hard=maxSteps; 4× потолок; `:cancel` на grace |
 | FR-009 деградация | §4 availability, degradation | pre-flight весь вызов; mid-run — по-задачно |
 | FR-010 usage | §4 result.ts (Usage) | терминальные ответы; absent = unknown |
-| FR-011 model-window | §4 pool: Окно rate-limit | 429×5 подряд → исключение модели + отмена детей + перезапуск задач (≤2 спасения); timeout/перегрузка — не вина модели |
+| FR-011 model-window | §4 pool: Окно rate-limit | 429×5 подряд → исключение модели из НОВЫХ запусков (очередь — на другие модели; дети дорабатывают); timeout/перегрузка — не вина модели |
 | NFR-001 usability | §7 | таблица + клампы |
 | NFR-002 performance | §7 | время ≈ Σ(длительности задач)/W |
 | NFR-004 security | §6 | block-list + hard |
@@ -52,7 +52,7 @@ dispose резолвит висящие промисы. Trade-off: ход лид
 | `seam/availability.ts` | проверка шины событий | boolean | ограничение — §15 R3 |
 | `seam/client.ts` | подписки, run(), cancel(), dispose() | 1 клиент на fan-out; dispose резолвит pending | статусы → SeamOutcome |
 | `pool/fanout.ts` | ширина, клампы, FIFO, ротация, per-model cap, окно rate-limit | не знает формат брифа | дренаж при «нет моделей» |
-| `briefs.ts` | бриф задачи + continuation-бриф спасения | чистые функции | контракт — JSON-блок |
+| `briefs.ts` | бриф задачи | чистые функции | контракт — JSON-блок |
 | `report/{schema,validate,retry}.ts` | отчёт, violatedFields, 1 ретрай | | ретрай на той же модели |
 | `result.ts` | FanoutResult: строки, клампы, usage | чистая функция | structured + text + details |
 | `degradation.ts` | отказы «делай сам» | pre-flight текст; mid-run — per-task | |
@@ -75,9 +75,7 @@ flowchart TD
     W -- structured_output_failed --> R[retry: 1 перезапрос, та же модель, слот удержан]
     R -- снова fail --> F1[failed + schemaMissing]
     W -- completed --> S[result]
-    C -- window-429, счётчик модели ≥5 --> MW[окно rate-limit: модель исключена из ротации, её дети отменены]
-    MW --> RC[те же задачи в голову FIFO: новая модель, continuation-бриф, ≤2 спасений]
-    RC --> C
+    C -- window-429, счётчик модели ≥5 --> MW[окно rate-limit: модель исключена из НОВЫХ запусков; очередь уходит на другие модели]
     MW -- моделей нет --> F2[failed: no-available-model]
     C -- timeout / interrupted / перегрузка --> F5[failed: исходная причина]
     C -- cancelled --> F3[cancelled]
@@ -156,11 +154,11 @@ interface TaskResult {
   summary: string; filesChanged: string[]; evidence: string[]; residualRisks: string[];
   question?: string;
   error?: string;        // machine-code: timeout | max_steps | schema-missing | acceptance-failed |
-                         // seam-unavailable | no-available-model | window-rescue-exhausted | host:<code>
+                         // seam-unavailable | no-available-model | host:<code>
   schemaMissing?: boolean;
-  attempts: number;      // запусков воркера по задаче (0..3: старт + ≤2 спасения окна
-                         // FR-011; 0 = не запущена — пустая ротация/дренаж; schema-ретрай
-                         // FR-007 не считается)
+  attempts: number;      // запусков воркера по задаче (0..2: старт + schema-ретрай
+                         // FR-007 как второй запуск; 0 = не запущена — пустая ротация/
+                         // дренаж)
   turns?: number;        // Σ терминальных usage.turns ПО ВСЕМ попыткам; отсутствие = unknown (не 0!)
   turnsObserved?: number; // последний :update-снимок ПОСЛЕДНЕЙ попытки (снимки per-attempt,
                           // delegation.d.ts:44-47); fallback для barren-детектора F19
@@ -206,9 +204,12 @@ type SeamOutcome =
   | { kind: "hostError"; code: string; message: string;
       modelAttributable: boolean; usage?: UsageTotals };  // остальное: invalid_request,
                                   // duplicate_node, tool_budget_exhausted, no-structured-output,
-                                  // 429/overload/…; modelAttributable = true по классификации ниже:
-                                  // структурный rate_limited ИЛИ case-insensitive substring
-                                  // 429/overload/rate-limit/quota (единый список Q-002).
+                                  // 429/…; трёхклассная классификация ниже (ЕДИНАЯ с Q-002):
+                                  // (1) окно — quota / rate limit exceeded / limit reached /
+                                  // plan|billing limit → счётчик окна модели;
+                                  // (2) перегрузка — overloaded / server busy / too many
+                                  // concurrent / try again later / 529 — счётчик НЕ растит;
+                                  // (3) прочее — не-модельное.
                                   // B-2-R5: адаптер прикладывает usage к ЛЮБОМУ терминальному
                                   // ответу при наличии child.usage (delegation-adapters.js ~:292-303,
                                   // гейта по статусу нет) — отбрасывать его вне report занижало Σ (FR-010)
@@ -233,9 +234,8 @@ runFanout(deps: FanoutDeps): Promise<FanoutResult | DegradationRefusal>;
   `requestId = "fusion-<task.id>-a<attempt>-<seq>-<ts>"` и
   `nodeId = "<task.id>#a<attempt>"` — оба ЗАВИСЯТ ОТ НОМЕРА ПОПЫТКИ (B-3-R5: мост
   держит activeOwnedNodes вплоть до `finally` после фактического завершения ребёнка —
-  prompt-template-bridge.js:232-236/:278/:349; повторный запуск задачи (спасение
-  окна FR-011, schema-ретрай FR-007) со «старым» nodeId ловит duplicate_node).
-  task.id валидируется
+  prompt-template-bridge.js:232-236/:278/:349; повторный запуск задачи (schema-ретрай
+  FR-007) со «старым» nodeId ловит duplicate_node). task.id валидируется
   заранее: ≤ 200 символов (m1-R5, уточнено R6: худший случай при id=200 —
   «fusion-»7 + id 200 + «-a12-»5 + seq 10 ЦИФР + «-»1 + ts 13 = 236 ≤ 256 —
   запас даже при 10-значном счётчике fan-out'ов, что недостижимо до R8-сатурации
@@ -262,7 +262,7 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
 
 | Статус шва | Правило хоста | SeamOutcome | Действие пула |
 |---|---|---|---|
-| `cancelled` | aborted | `cancelled` | TaskResult cancelled |
+| `cancelled` | aborted | `cancelled` | TaskResult cancelled (Esc/диспоуз; поздний терминал после grace-таймаута игнорируется — M13) |
 | `failed` | нет ребёнка / isError / child.error / exitCode≠0 (проверяется ПОСЛЕ `interrupted`); также из исключений моста | `hostError(code:"failed")`, классификация ниже (окно/перегрузка/не-модельный) | failed host:failed; окно-класс растит счётчик модели (FR-011) |
 | `timed_out` | details.timedOut / child.timedOut | `timeout` | failed(timeout) + подсказка «возможно, taskTimeoutMs мал»; модель НЕ трогается (timeout — не вина модели; владелец 2026-10-31) |
 | `structured_output_failed` | child.structuredOutputFailed | `schemaFailed` | ретрай FR-007 (та же модель) |
@@ -280,8 +280,9 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   plan|billing limit (текст ошибки, case-insensitive substring); счётчик «окно»
   модели +1, любой другой исход модели СБРАСЫВАЕТ счётчик.
   (2) ПЕРЕГРУЗКА — маркеры overloaded / server busy / too many concurrent /
-  try again later / 529: счётчик окна НЕ растёт (нижние слои ретрают сами — SDK
-  retry-after + retry-поведение pi, custom-provider.md:206); задача
+  try again later / 529: счётчик окна НЕ растёт (мимолётные 429 гасит агентный
+  ретрай pi внутри сессии ребёнка — settings retry с бэкоффом,
+  providerDiagnostics.retry в API шва; custom-provider.md:206); задача
   failed(host:429-overload), модель остаётся.
   (3) НЕ-модельные — timeout/interrupted/контентные: задача терминальна, модель
   не трогается. Структурный признак `providerDiagnostics.lastError.kind ===
@@ -331,26 +332,28 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   и расписание ждёт вечно. ClampRow `{noModels, requested: W_req, applied: 0}`
   в диагностике.
 - **Ротация**: round-robin по `workerModels` с пропуском моделей без ёмкости.
-- **Окно rate-limit → исключение модели** (FR-011, решение владельца 2026-10-31):
-  счётчик «окно» инкрементируется на каждом отказе модели класса «окно»
-  (классификация ниже) и сбрасывается любым другим исходом этой модели. При
-  счётчике ≥ 5 ПОДРЯД (упёрлись в окно) модель удаляется из `activeModels` до
-  конца вызова, и ВСЕ её бегущие дети ОТМЕНЯЮТСЯ (`:cancel`); каждая отменённая
-  задача ставится в голову FIFO на новую модель с continuation-брифом (≤ 2 спасений
-  на задачу, дальше failed(window-rescue-exhausted)). `timeout`, `interrupted` и
-  перегрузка модель НЕ исключают и счётчик НЕ растят: timeout — задача
-  failed(timeout) с подсказкой «возможно, taskTimeoutMs мал»; перегрузка —
-  failed(host:429-overload), нижние слои ретраят сами.
+- **Окно rate-limit → исключение модели из НОВЫХ запусков** (FR-011, финальное
+  решение владельца 2026-10-31 после ресерча шва): счётчик «окно» инкрементируется
+  на каждом отказе модели класса «окно» (классификация ниже) и сбрасывается любым
+  другим исходом этой модели. При счётчике ≥ 5 ПОДРЯД (упёрлись в окно) модель
+  удаляется из `activeModels` до конца вызова: новые запуски и вся оставшаяся
+  очередь направляются только другим моделям. Её БЕГУЩИЕ дети не трогаются —
+  исключение НЕ сопровождается `:cancel` (grace-дедлайн FR-008 и Esc — отдельные
+  механизмы и остаются): завершившиеся — результат принимается штатно; упавшие —
+  терминальный отказ задачи с исходной причиной (таблица статусов).
+  `timeout`, `interrupted` и перегрузка модель НЕ исключают и счётчик НЕ растят:
+  timeout — задача failed(timeout) с подсказкой «возможно, taskTimeoutMs мал»;
+  перегрузка — failed(host:429-overload), мимолётные 429 гасит агентный ретрай pi
+  внутри сессии ребёнка (settings retry с бэкоффом; providerDiagnostics.retry в
+  API шва; custom-provider.md:206).
 - **Дренаж «нет допустимой модели»** (B3, уточнение R2): когда `activeModels` пуст,
   все ЕЩЁ НЕ ЗАПУЩЕННЫЕ задачи очереди немедленно `failed(no-available-model)`.
-  (Дети исключённых по окну моделей уже отменены и спасены — см. выше.)
-  Дедлок невозможен.
-- **Спасение задач окна (FR-011)**: отменённые дети исключённой модели → те же
-  задачи в голову FIFO на новой модели с continuation-брифом; счётчик `attempts`
-  растёт; после 2 безуспешных спасений — failed(window-rescue-exhausted). Обычные
-  отказы (timeout/interrupted/перегрузка/не-модельные) НЕ перезапускаются —
-  терминальны с исходной причиной (владелец: «подмены задач не нужны — только
-  окно»). Отказ одной задачи — не отказ вызова (US-001/NFR-005).
+  Уже запущенные дети (чьи модели исключены по окну) продолжают и завершаются
+  естественно, их результаты принимаются. Дедлок невозможен.
+- **Никаких перезапусков задач** (владелец, финально 2026-10-31): отказ задачи
+  (timeout/interrupted/перегрузка/не-модельный, включая отказ запуска у модели
+  с окном) — терминален с исходной причиной; задача не ставится повторно, пул
+  задачу не спасает. Отказ одной задачи — не отказ вызова (US-001/NFR-005).
 - **Ре-отправка после терминала** (M13-R3, уточнено B-3-R5): duplicate_node между
   попытками исключён ПОСТРОЕНИЕМ — nodeId попытко-специфичен (см. Request); правило
   микротаски сохраняется как гигиена реентерабельности (не ре-emit синхронно внутри
@@ -360,7 +363,7 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   council:121-125).
 - **FIFO**: очередные задачи в порядке индексов; релиз слота — триггер dispatch.
 
-### Brief и continuation-бриф спасения (briefs.ts)
+### Brief (briefs.ts)
 
 ```text
 {contract ? renderContract(contract) + "\n\n---\n\n" : ""}
@@ -377,11 +380,9 @@ Scope files: {files.join(", ")}   # строка — если есть
 (8000, константа атомика) — это ОТКАЗ валидации ещё до fan-out (B4-R3: атомик
 отклоняет вызов, delegate-args.ts:497-503), а не обрезка.
 
-Continuation-бриф (FR-011, спасение после окна) = тот же шаблон + заголовок
-«(продолжение, попытка N)» + эпилог: «Предыдущая попытка (модель {X}) отменена:
-исчерпано окно rate-limit. Частичное состояние может быть на диске в scope files:
-сначала проверь текущее состояние, доделай остаток, не переделывай завершённое.»
-Язык брифа — язык лида; в шов уходит только бриф (NFR-004).
+Continuation-брифов нет: задача не перезапускается ни при каком отказе
+(владелец, финально 2026-10-31). Язык брифа — язык лида; в шов уходит только
+бриф (NFR-004).
 
 ### Report retry (report/retry.ts)
 
@@ -396,7 +397,7 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
   повторять.» Слот модели **удерживается** на время ретрая (minor 2: release-перехват
   исключён). Таймаут ретрая = min(120s, task timeoutMs).
 - Повторный провал → `failed` + `schemaMissing: true`. Ровно один ретрай (FR-007);
-  ретрай не расходует счётчик спасений FR-011.
+  ретрай не инкрементирует счётчик окна FR-011 и считается вторым запуском в attempts.
 
 ### Result (result.ts)
 
@@ -436,7 +437,7 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
 |---|---|---|---|
 | pi-subagents delegation шов | спавн воркеров, отчёты, usage | право тула расширения | FR-009; per-task hostError; окно FR-011 |
 | `~/.pi/agent/fusion.json` | дефолты ширины/таймаутов/моделей/maxSteps | read файл | отсутствует → дефолты config-bridge |
-| Реестр моделей pi | model id в ротации | — | окно 429×5 → исключение из activeModels + отмена детей + спасение задач |
+| Реестр моделей pi | model id в ротации | — | окно 429×5 → исключение из activeModels (новые запуски — на другие модели) |
 | fusion-worker.md агент | политика/allowlist воркера | установлен в `~/.pi/agent/agents/` (F03) | hostError per-task с диагностикой |
 | docs/extensions.md контракт | exposure/setActiveTools/details | — | регистрация direct + немедленная дизактивация, активация F02 (B5-R3) |
 
@@ -455,13 +456,13 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
   строже); отчёт — строгая схема с if/then (question); full port contract-валидатора
   (см. types.ts); `no_changes ⇒ filesChanged: []`.
 - **Sensitive data:** в шов уходит только бриф; переписка лида не покидает сессию.
-- **Abuse:** кап 16 задач; per-model cap; кап спасений окна (≤2 на задачу).
+- **Abuse:** кап 16 задач; per-model cap; исключение по окну ограничивает стоимость повторных 429.
 
 ## 7. UX / Accessibility
 
 - Таблица текстом: `id · status · summary · files`; причины клампов отдельными
   строками; usage — одной строкой с пометкой при `usagePartial`; для задач с
-  attempts > 1 — суффикс «(попытка N, модель M)» (спасение окна или schema-ретрай).
+  attempts > 1 — суффикс «(попытка N, модель M)» (schema-ретрай FR-007).
 - Ошибки валидации называют поле-нарушитель; деградация — один явный приказ
   «делай работу сам».
 
@@ -476,8 +477,8 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
 | Единственная модель: подтверждённый 429 (rate_limited) | модель исключается → очередь дренится failed(no-available-model); бегущие дети дорабатывают штатно |
 | `workerModels: []` (пустая ротация) | pre-flight пула: все задачи немедленно failed(no-available-model), вызов завершается — никакого ожидания (B-FINAL; иначе width=0 и расписание висит вечно) |
 | id > 200 символов (полный requestId > 256) или с CR/LF | ошибка валидации до fan-out (иначе мост молчит до grace — M9-R3, m1-R5) |
-| Окно: модель A дала 5 подряд window-429 | A исключена из activeModels, дети A отменены (:cancel), их задачи — в голову FIFO на B с continuation-брифом (≤2 спасений) |
-| Окно: моделей больше нет | очередь дренится failed(no-available-model) |
+| Окно: модель A дала 5 подряд window-429 | A исключена из НОВЫХ запусков (очередь и новые задачи — на B); дети A дорабатывают, результаты принимаются; ни одного `:cancel` от пула |
+| Окно: моделей больше нет | очередь дренится failed(no-available-model); запущенные дети дорабатывают |
 | Перегрузка (overload/busy/529) | задача failed(host:429-overload); счётчик окна НЕ растёт; модель остаётся (нижние слои ретраят сами — custom-provider.md:206) |
 | `structured_output_failed` | ретрай 1× та же модель, слот удержан → иначе failed+schemaMissing |
 | `acceptance_failed` | failed(host:acceptance-failed), без исключения модели (не достигается при acceptance:false в запросе — defense-in-depth) |
@@ -517,9 +518,10 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
    perModel — MINOR-3-R7; ЯВНЫЙ assert ClampRow
    {field:"perModel", requested:3, applied:2} — n3-R6) / 1 модель (timeout задачи →
    failed(timeout) + подсказка, вызов продолжается); (б) 5 задач / width 3 / **2 модели**
-   (окно rate-limit: 5 подряд window-429 от A → A исключена из ротации, её дети
-   отменены, их задачи спасены на B с continuation-брифом; timeout → failed без
-   перезапуска) + микс исходов: done, no_changes,
+   (окно rate-limit: 5 подряд window-429 от A → A исключена из НОВЫХ запусков,
+   оставшиеся задачи идут на B; дети A дорабатывают — завершившиеся приняты;
+   ЯВНЫЙ assert: ни одного `:cancel` от пула; timeout → failed без перезапуска)
+   + микс исходов: done, no_changes,
    failed, needs_orchestrator, schema-failed→ретрай ok, Esc-отмена.
 10. README спеки-уровня: ручная проверка до F02.
 
@@ -540,15 +542,15 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
   asserts: 0 эмитов `:request`, у каждой задачи error === "no-available-model",
   attempts = 0, ClampRow {noModels, requested, applied: 0} (NIT-1-R8).
 - Окно rate-limit (FR-011): счётчик per-model — window-429 инкрементирует, любой
-  другой исход модели сбрасывает; ≥5 подряд → модель исключена из activeModels,
-  её бегущие дети отменены (:cancel), их задачи в голове FIFO на новой модели с
-  continuation-брифом (≤2 спасений, дальше window-rescue-exhausted); timeout/
-  interrupted/перегрузка счётчик НЕ растят и задачу НЕ перезапускают; **B-3-R5**:
-  fake-мост, освобождающий nodeId только после abort → спасённый запуск с НОВЫМ
-  nodeId (task.id#a2) НЕ получает duplicate_node; поздний :response отменённой
-  попытки игнорируется; usage всех запусков (включая отменённые и спасённые)
-  входит в Σ TaskResult.usage; turnsObserved per-attempt, TaskResult.turns =
-  Σ запусков.
+  другой исход модели сбрасывает; ≥5 подряд → модель исключена из НОВЫХ запусков
+  (очередь уходит на другие модели); ЯВНЫЙ assert: при исключении пул НЕ эмитит
+  ни одного `:cancel`; дети исключённой модели в fake-мосте дорабатывают —
+  завершившиеся приняты, упавшие — терминальны с исходной причиной; timeout/
+  interrupted/перегрузка счётчик НЕ растят и задачу НЕ перезапускают; дренаж при
+  пустой ротации после исключений; **B-3-R5**: schema-ретрай FR-007 с НОВЫМ
+  nodeId (task.id#a2) НЕ получает duplicate_node (fake-мост, освобождающий nodeId
+  только после терминала); usage всех запусков задачи входит в Σ
+  TaskResult.usage; turnsObserved per-attempt, TaskResult.turns = Σ запусков.
 - Ретрай: structured_output_failed → 1 ретрай; слот удержан; schemaMissing после 2-го.
 - Шов-клиент: таймаут+grace → `:cancel` с телом {requestId, ownerRunId, nodeId};
   dispose резолвит pending; ignore-after-dispose; **полная таблица 11 статусов**
@@ -592,7 +594,7 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
 ## 12. Observability / Operations
 
 - **Logs:** `PI_FUSION_DEBUG=1` → stderr: requestId, nodeId, model, фазы
-  (dispatch/response/retry/window-exclude/rescue/cancel/dispose), `:update`-снимки usage,
+  (dispatch/response/retry/window-exclude/cancel-оператора/dispose), `:update`-снимки usage,
   providerDiagnostics модельных отказов (классификация M5-R3).
 - **Metrics:** usage-сумма (terminal-only), attempts по задачам, длительность fan-out.
 - **Support:** `/fusion status` — F02; до него — DEBUG-лог.
@@ -655,26 +657,32 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
 - **Trade-off:** тройная сериализация (тривиальна).
 - **Alternatives:** только structured / только текст.
 
-### TD-006: Окно rate-limit = исключение + отмена + спасение задач (FR-011)
+### TD-006: Окно rate-limit = только исключение модели из новых запусков (FR-011)
 
-- **Decision (владелец 2026-10-31):** подмен «лёгких» отказов НЕТ — timeout/
-  interrupted/перегрузка/контентные: задача терминальна с исходной причиной
-  (timeout — не вина модели, возможно taskTimeoutMs мал). Единственная модельная
-  реакция — окно: ≥5 подряд window-429 → модель исключается из ротации, её дети
-  отменяются, ТЕ ЖЕ задачи перезапускаются на новой модели с continuation-брифом
-  (≤2 спасений/задачу). Непрерывность — состояние на диске (общий cwd).
-- **Why:** идеал владельца — живая смена модели работающего ребёнка без прерывания.
-  Проверено по исходникам: механизм в pi ЕСТЬ (session-format.md:99 model_switch,
-  rpc «switch model»; SDK-ретрай retry-after для перегрузки), но шов pi-subagents
-  НЕ открывает канал rebind/steer (SubagentDelegationRequest пинит модель; протокол —
-  только :request/:response/:started/:update/:cancel; intercom-мост — канал
-  «ребёнок спрашивает родителя», не команд родителя ребёнку).
-- **Trade-off:** спасённая задача — новый воркер-процесс (перечитывает диск);
-  детей исключённой модели ждёт :cancel.
-- **Future work (владелец):** ресерч живой подмены модели без прерывания —
-  апстрим-предложение в pi-subagents (событие :rebind {requestId, model} + поддержка
-  раннера; rpc switch-model у ребёнка уже есть), сторонние плагины/форки. После
-  появления — переход FR-011 на hot-swap в v2 (см. §15).
+- **Decision (владелец 2026-10-31, финально):** ни отмен детей, ни спасения задач —
+  модель с окном ≥5 подряд window-429 исключается из НОВЫХ запусков до конца
+  вызова; очередь и новые задачи идут на другие модели; бегущие дети дорабатывают
+  естественно (завершившиеся принимаются, упавшие — терминальный отказ задачи с
+  исходной причиной). Мимолётную перегрузку гасит агентный ретрай pi внутри
+  сессии ребёнка (settings retry: maxRetries/baseDelayMs/maxAgentDelayMs;
+  providerDiagnostics.retry {phase backoff|in_flight} в API шва — ретраи видны
+  в телеметрии; custom-provider.md:206).
+- **Why:** отмена бегущих детей избыточна — окно бьёт по новым запускам, а
+  текущие могут успеть доработать. Пул без права `:cancel` при исключении резко
+  упрощает семантику (cancelled = только Esc/диспоуз) и снимает конфликт маппинга
+  статусов (blocker R8). Живая смена модели работающего ребёнка остаётся идеалом
+  владельца, но сегодня шов её не открывает (future work ниже).
+- **Trade-off:** упавшая задача ребёнка исключённой модели терминальна —
+  повторную работу лид при желании делает новым делегированием своим ходом.
+- **Future work (владелец; ресерч 2026-10-31), три пути живой подмены:**
+  (1) worker-side расширение — доки pi дают расширению session-control над
+  моделью СОБСТВЕННОЙ сессии (extensions.md): воркер может сам переключить себя
+  при 429; (2) RPC set_model живой сессии — кто держит канал (раннер) и поведение
+  mid-inference не доказаны; (3) апстрим: pi issue #2266 «fallback models after
+  retries» (кросс-модельные цепочки реализованы в форке Oh My Pi —
+  fallbackChains/rateLimitWalksChain/cooldown-expiry), предложение :rebind в
+  pi-subagents; steer/resume существуют как RPC-методы раннера для async-ранов —
+  проверить применимость к seam-детям. После появления — hot-swap в v2 (§15).
 - **Alternatives:** (а) ждать восстановления квоты той же модели — неопределённое
   ожидание внутри заблокированного хода лида; (б) сброс задачи лиду — теряется
   автоматизм и работа на диске.
@@ -720,9 +728,9 @@ Continuation-бриф (FR-011, спасение после окна) = тот ж
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | R1: API drift шва pi-subagents | Medium | High | pin версии; live smoke за флагом; FR-009; TD-002 примечание (structured в шве не имеет живого прецедента) |
-| R2: 429/квоты дешёвых моделей | Medium | Medium | per-model cap + ротация + окно FR-011 (исключение + отмена + спасение ≤2) |
+| R2: 429/квоты дешёвых моделей | Medium | Medium | per-model cap + ротация + окно FR-011 (исключение из новых запусков) + агентный ретрай pi для мимолётных 429 |
 | R3: availability-чек не доказывает наличие слушателя шва | Medium | Medium | per-task timeout+grace ставит предел ожидания; live smoke; `:started` ≤10s после request → DEBUG warn (наблюдаемость); без блокирующего отказа |
-| R4: окно квоты длинное — исключённая модель не возвращается до конца вызова; спасённые задачи стартуют с нуля контекста (диск несёт только файлы) | Medium | Medium | ротация на вызов; следующий вызов — чистая ротация; continuation-бриф; ресерч живой подмены (TD-006 future work) |
+| R4: окно квоты длинное — исключённая модель не возвращается до конца вызова; упавшие дети этой модели терминальны (пере-делегирование — решение лида) | Medium | Medium | ротация на вызов; следующий вызов — чистая ротация; ресерч hot-swap (TD-006 future work) |
 | R5: локальная нога: ширина не учитывает слоты llama-server (poolSize) | Low | Medium | риск зафиксирован; дефолт ширины оператора; учёт слотов — F18 (Phase 3) |
 | R6: 15s grace мало для долгой записи | Low | Low | константа в одном месте; правится одним диффом |
 | R7: fusion-worker.md отсутствует | Medium | Medium | hostError с диагностикой; установка F03/F14 |
@@ -749,10 +757,17 @@ structured и usage опираются на API шва + live smoke.*
 **Q:** Возвращает ли needs_orchestrator управление воркеру?  
 **A:** Нет — терминален в вызове (Q-001); продолжение — решение лида.
 
-**Q:** Чем schema-retry отличается от спасения окна?  
-**A:** Ретрай — та же модель, слот удержан, чинит форму отчёта (не расходует счётчик
-спасений); спасение окна — новая модель после исключения старой, attempts+1,
-continuation-бриф. Перезапуск спасает работу через состояние на диске.
+**Q:** Спасает ли окно упавшие задачи исключённой модели?  
+**A:** Нет (владелец, финально 2026-10-31): окно только исключает модель из новых
+запусков. Упавшая задача терминальна с исходной причиной; лид может пере-делегировать
+работу сам следующим ходом — это его решение, не механика пула.
+
+**Q:** Можно ли сменить модель работающему воркеру, не прерывая его?  
+**A:** Сегодня нет: шов pi-subagents не открывает канал rebind. Мимолётные 429
+воркер гасит сам (агентный ретрай pi с бэкоффом). Future work (TD-006): (1)
+worker-side расширение с session-control над моделью собственной сессии; (2)
+RPC set_model живой сессии; (3) апстрим — pi issue #2266 (fallback-цепочки) +
+предложение :rebind в pi-subagents. После появления — hot-swap в v2.
 
 **Q:** Можно ли сменить модель работающему воркеру, не прерывая его?  
 **A:** Сегодня нет: шов pi-subagents не открывает канал rebind (проверено по

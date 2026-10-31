@@ -1,5 +1,7 @@
 .auto/
 .pi/
-.beads/
+.beads/*
+!.beads/issues.jsonl
+.agile-js/
 node_modules/
 dist/

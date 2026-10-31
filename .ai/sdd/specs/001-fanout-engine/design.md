@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 model-window)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.5.1 — финальное решение владельца 2026-10-31 после ресерча шва: окно rate-limit 429×5 → ТОЛЬКО исключение модели из НОВЫХ запусков; дети не отменяются, задачи не спасаются; timeout/перегрузка — не вина модели; предшествующие — R1-R7, финальное ревью пакета, rev.5.0)
+> Status: Draft (rev.5.2 — финальное решение владельца 2026-10-31 после ресерча шва: окно rate-limit 429×5 → ТОЛЬКО исключение модели из НОВЫХ запусков; дети не отменяются, задачи не спасаются; timeout/перегрузка — не вина модели; предшествующие — R1-R7, финальное ревью пакета, rev.5.0/5.1; R8-остатки: FAQ-хвосты удалены, edge ≥5 подряд, windowClass)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -76,6 +76,7 @@ flowchart TD
     R -- снова fail --> F1[failed + schemaMissing]
     W -- completed --> S[result]
     C -- window-429, счётчик модели ≥5 --> MW[окно rate-limit: модель исключена из НОВЫХ запусков; очередь уходит на другие модели]
+    C -- window-429, счётчик <5 --> F5
     MW -- моделей нет --> F2[failed: no-available-model]
     C -- timeout / interrupted / перегрузка --> F5[failed: исходная причина]
     C -- cancelled --> F3[cancelled]
@@ -202,9 +203,11 @@ type SeamOutcome =
                                                                    // локальный dispose-resolve — usage НЕТ (= unknown)
   | { kind: "unavailableContext" }                                 // unavailable_context
   | { kind: "hostError"; code: string; message: string;
-      modelAttributable: boolean; usage?: UsageTotals };  // остальное: invalid_request,
+      windowClass: boolean; usage?: UsageTotals };  // остальное: invalid_request,
                                   // duplicate_node, tool_budget_exhausted, no-structured-output,
-                                  // 429/…; трёхклассная классификация ниже (ЕДИНАЯ с Q-002):
+                                  // 429/…; windowClass=true ТОЛЬКО для класса (1) — окно
+                                  // (именно он инкрементирует счётчик исключения FR-011);
+                                  // трёхклассная классификация ниже (ЕДИНАЯ с Q-002):
                                   // (1) окно — quota / rate limit exceeded / limit reached /
                                   // plan|billing limit → счётчик окна модели;
                                   // (2) перегрузка — overloaded / server busy / too many
@@ -284,7 +287,7 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   ретрай pi внутри сессии ребёнка — settings retry с бэкоффом,
   providerDiagnostics.retry в API шва; custom-provider.md:206); задача
   failed(host:429-overload), модель остаётся.
-  (3) НЕ-модельные — timeout/interrupted/контентные: задача терминальна, модель
+  (3) НЕ-модельные — timeout/interrupted/прочее: задача терминальна, модель
   не трогается. Структурный признак `providerDiagnostics.lastError.kind ===
   "rate_limited"` (delegation.d.ts:57-64, :59-60) ВТОРИЧЕН: хост-классификатор
   отдаёт rate_limited и для «Too many requests», и для лимитов
@@ -474,7 +477,7 @@ Continuation-брифов нет: задача не перезапускаетс
 | `maxWorkers: 99` | клампы по цепочке + ClampRow |
 | Все workerModels заняты | ожидание релиза слота |
 | Единственная модель: timeout/interrupted/перегрузка | задача failed с исходной причиной (+ подсказка про taskTimeoutMs для timeout), модель остаётся в ротации, счётчик окна не растёт, вызов продолжается |
-| Единственная модель: подтверждённый 429 (rate_limited) | модель исключается → очередь дренится failed(no-available-model); бегущие дети дорабатывают штатно |
+| Единственная модель: 5 подряд window-429 (маркеры Q-002) | модель исключается из НОВЫХ запусков → очередь дренится failed(no-available-model); бегущие дети дорабатывают штатно |
 | `workerModels: []` (пустая ротация) | pre-flight пула: все задачи немедленно failed(no-available-model), вызов завершается — никакого ожидания (B-FINAL; иначе width=0 и расписание висит вечно) |
 | id > 200 символов (полный requestId > 256) или с CR/LF | ошибка валидации до fan-out (иначе мост молчит до grace — M9-R3, m1-R5) |
 | Окно: модель A дала 5 подряд window-429 | A исключена из НОВЫХ запусков (очередь и новые задачи — на B); дети A дорабатывают, результаты принимаются; ни одного `:cancel` от пула |
@@ -749,11 +752,6 @@ structured и usage опираются на API шва + live smoke.*
 **Q:** Кто выбирает модель воркера?  
 **A:** Пул из `workerModels` ротацией; per-task выбор лидом сломал бы cap и ротацию квот.
 
-**Q:** Можно ли поменять модель живому воркеру (hot-swap)?  
-**A:** Нет — модель пинится в запросе шва, resume/rebind в SubagentDelegationRequest
-нет. FR-011 делает re-delegation той же задачи на другой модели; непрерывность —
-состояние на диске.
-
 **Q:** Возвращает ли needs_orchestrator управление воркеру?  
 **A:** Нет — терминален в вызове (Q-001); продолжение — решение лида.
 
@@ -768,12 +766,6 @@ structured и usage опираются на API шва + live smoke.*
 worker-side расширение с session-control над моделью собственной сессии; (2)
 RPC set_model живой сессии; (3) апстрим — pi issue #2266 (fallback-цепочки) +
 предложение :rebind в pi-subagents. После появления — hot-swap в v2.
-
-**Q:** Можно ли сменить модель работающему воркеру, не прерывая его?  
-**A:** Сегодня нет: шов pi-subagents не открывает канал rebind (проверено по
-исходникам), хотя механизм в pi есть (model_switch в сессии). Future work (TD-006):
-апстрим-предложение в pi-subagents + ресерч плагинов; после появления — hot-swap
-в v2.
 
 **Q:** Что если воркер поменял файлы вне declared files?  
 **A:** В 001 — filesChanged вернётся как есть; скоуп-чек — F11 (спека 003).

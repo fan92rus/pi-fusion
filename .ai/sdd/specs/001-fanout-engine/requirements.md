@@ -1,6 +1,6 @@
 # Feature: fanout-engine (F04–F07, F09)
 
-> Status: Approved (2026-10-31; ревизия синхронизирована с design rev.5.1; изменено после ревью R1-R7, финального пакета и финального решения владельца 2026-10-31 (FR-011: окно rate-limit = только исключение модели из новых запусков, без отмен и спасений): FR-002, FR-003, FR-006, FR-008, FR-009, FR-010, FR-011, Q-002 — одобрено владельцем)
+> Status: Approved (2026-10-31; ревизия синхронизирована с design rev.5.2; изменено после ревью R1-R7, финального пакета и финального решения владельца 2026-10-31 (FR-011: окно rate-limit = только исключение модели из новых запусков, без отмен и спасений): FR-002, FR-003, FR-006, FR-008, FR-009, FR-010, FR-011, Q-002 — одобрено владельцем)
 > Source: @[../../PLAN.md] · @[../../ideas/001-fusion-mode-for-pi.md]
 > Last Updated: 2026-10-31
 
@@ -195,7 +195,7 @@ usage и turns суммируются по ВСЕМ запускам задач�
 
 Классы исходов модели (маркеры — Q-002): (1) ОКНО rate-limit (попадание в квотное
 окно); (2) ПЕРЕГРУЗКА (мимолётная одновременная нагрузка, те же 429-коды);
-(3) НЕ-модельные (timeout, interrupted, контентные отказы).
+(3) НЕ-модельные (timeout, interrupted, прочее).
 
 WHEN счётчик «окно» модели достигает ≥ 5 ПОДРЯД (window-429 инкрементирует;
 любой другой исход этой модели сбрасывает)
@@ -218,7 +218,7 @@ failed(no-available-model); уже запущенные дети дорабат�
 maxRetries/baseDelayMs/maxAgentDelayMs; providerDiagnostics.retry в API шва;
 custom-provider.md:206); timeout — failed(timeout) с подсказкой «возможно,
 taskTimeoutMs мал» (timeout — не вина модели); `interrupted` — failed(interrupted).
-Не является отказом задачи: schema-missing (это FR-007 — ретрай той же модели),
+Не относится к классу окна (счётчик не растёт): schema-missing (это FR-007 — ретрай той же модели),
 needs_orchestrator (терминален, Q-001), `cancelled` (только оператор/диспоуз).
 
 ## Non-Functional Requirements
@@ -344,11 +344,11 @@ reached / plan|billing limit (текст ошибки, case-insensitive substrin
 try again later / 529: счётчик окна НЕ растёт, модель остаётся; задача
 failed(host:429-overload) — нижние слои ретрают сами (SDK retry-after;
 custom-provider.md:206).
-(3) НЕ-модельные — timeout/interrupted/контентные: задача терминальна, модель
+(3) НЕ-модельные — timeout/interrupted/прочее: задача терминальна, модель
 не трогается. Структурный признак `providerDiagnostics.lastError.kind ===
 "rate_limited"` вторичен: хост-классификатор отдаёт rate_limited и для «Too many
 requests», и для лимитов (shared/provider-diagnostics.js) — классы (1)/(2)
-различаются текстовыми маркерами. Не является отказом задачи: schema-missing
+различаются текстовыми маркерами. Не относится к классу окна (счётчик не растёт): schema-missing
 (FR-007, та же модель), needs_orchestrator (Q-001), invalid_request,
 tool_budget_exhausted, acceptance_failed, cancelled. Термин «контентный отказ»
 не используется (n2-R5).

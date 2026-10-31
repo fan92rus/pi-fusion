@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 failover)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.4 — после ревью R1+R2+R3; все найденные блокеры/миноры/нитсы внесены)
+> Status: Draft (rev.4.1 — фикс остатка R4: единый критерий исключения модели Q-002 в 4 местах; title-нормализация; E2E requested/factual width; точные пути шовных файлов)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -231,9 +231,11 @@ runFanout(deps: FanoutDeps): Promise<FanoutResult | DegradationRefusal>;
   = `timeoutMs + 15s grace`; при истечении — `cancel(requestId)`, исход `timeout`
   (minor 3: ребёнок на хосте иначе доработал бы вне cap).
 - **Маппинг статусов шва** — все 11 литералов `SubagentDelegationStatus` явно, по одному
-разу; правила — по коду хоста (adapters `resolveSubagentDelegationStatus` + мост
-prompt-template-bridge.js: `unavailable_context`/`invalid_request`/`duplicate_node`
-производятся мостом, не адаптером — M8-R3):
+разу; правила — по коду хоста (точные пути для верификации: пакета pi-subagents —
+src/slash/delegation-adapters.js `resolveSubagentDelegationStatus`,
+src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл файлы по
+имени пакета — пути зафиксированы): `unavailable_context`/`invalid_request`/
+`duplicate_node` производятся мостом, не адаптером — M8-R3):
 
 | Статус шва | Правило хоста | SeamOutcome | Действие пула |
 |---|---|---|---|
@@ -251,9 +253,10 @@ prompt-template-bridge.js: `unavailable_context`/`invalid_request`/`duplicate_no
 
   Классификация modelAttributable (M5-R3): ПЕРВИЧНЫЙ признак структурный —
   `providerDiagnostics.lastError.kind === "rate_limited"` (поле терминального ответа,
-  delegation.d.ts:57-64, :110); вторичный — текст ошибки (429/rate.?limit/overload).
-  Квоту/биллинг классификатор хоста отдаёт как `unknown` — решаем по тексту. Статусам
-  сама по себе модельность не приписывается.
+  delegation.d.ts:57-64, :110); вторичный — текст ошибки (429/overload/rate.?limit/quota —
+  канонический список Q-002, ЕДИНЫЙ с §4 Pool и FR-011). Квоту/биллинг классификатор
+  хоста отдаёт как `unknown` — решаем по тексту. Статусам сама по себе модельность
+  не приписывается.
 - **Приоритет статусов** (minor 9): терминальное состояние рантайма (`cancelled`,
   `timeout`, `interrupted`, `hostError`, `unavailableContext`) всегда побеждает статус
   отчёта; отчёт учитывается только при `completed`.
@@ -286,7 +289,8 @@ prompt-template-bridge.js: `unavailable_context`/`invalid_request`/`duplicate_no
 - **Исключение отказавшей модели** (исправление B1-R3): из `activeModels` модель
   удаляется ТОЛЬКО при подтверждённом квотном отказе — `hostError` с
   `providerDiagnostics.lastError.kind === "rate_limited"` или текстовым матчем
-  429/rate-limit/overload. `timeout` и `interrupted` модель НЕ исключают (задача
+  429/overload/rate-limit/quota (канонический список Q-002, ЕДИНЫЙ с классификацией
+  ниже и FR-011). `timeout` и `interrupted` модель НЕ исключают (задача
   могла быть просто тяжёлой): дают failover-попытку на другой модели, сама модель
   остаётся в ротации. Бегущие дети исключённой модели НЕ отменяются: дорабатывают
   естественно, результаты принимаются штатно.
@@ -312,7 +316,8 @@ prompt-template-bridge.js: `unavailable_context`/`invalid_request`/`duplicate_no
 
 ```text
 {contract ? renderContract(contract) + "\n\n---\n\n" : ""}
-## {title ?? id}
+## {title} — title нормализован валидацией ДО рендера (дефолт = humanised id, §6;
+сырой id в бриф не попадает — M3/N3-R4)
 
 {instructions}
 
@@ -454,9 +459,10 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
    (setActiveTools без fusion_delegate) при enabled=false — docs:277: direct активен
    при регистрации, активный набор = declared set и управляется setActiveTools (B5-R3);
    live-проверка в smoke (§11). Wiring config-bridge.
-9. E2E на fake-pi, два сценария (B2-R3): (а) 5 задач / width 3 / **1 модель**
-   (per-model cap 2 обязателен к проверке; timeout задачи → failed(timeout), вызов
-   продолжается БЕЗ failover); (б) 5 задач / width 3 / **2 модели** (failover-путь:
+9. E2E на fake-pi, два сценария (B2-R3): (а) 5 задач / **width requested 3 →
+   фактическая 2** (per-model cap 2 при одной модели — кламп проверяется явно,
+   N-R4) / 1 модель (timeout задачи → failed(timeout), вызов продолжается БЕЗ
+   failover); (б) 5 задач / width 3 / **2 модели** (failover-путь:
    timeout→другая модель→done; 429→исключение модели) + микс исходов: done, no_changes,
    failed, needs_orchestrator, schema-failed→ретрай ok, Esc-отмена.
 10. README спеки-уровня: ручная проверка до F02.

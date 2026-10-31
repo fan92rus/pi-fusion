@@ -219,7 +219,8 @@ maxRetries/baseDelayMs/maxAgentDelayMs; providerDiagnostics.retry в API шва;
 custom-provider.md:206); timeout — failed(timeout) с подсказкой «возможно,
 taskTimeoutMs мал» (timeout — не вина модели); `interrupted` — failed(interrupted).
 Не относится к классу окна (счётчик не растёт): schema-missing (это FR-007 — ретрай той же модели),
-needs_orchestrator (терминален, Q-001), `cancelled` (только оператор/диспоуз).
+needs_orchestrator (терминален, Q-001), `invalid_request`, `tool_budget_exhausted`,
+`acceptance_failed`, `cancelled` (только оператор/диспоуз).
 
 ## Non-Functional Requirements
 

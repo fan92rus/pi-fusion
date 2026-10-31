@@ -71,7 +71,9 @@
 - Кастомные тулы НЕ гейтятся автоматически — approval реализуем в `execute()` через
   `ctx.ui.confirm`; сброс standing-yes на `turn_end`.
 - Тулах с nested model calls обязаны включать `usage` детей в результат (точность
-  session totals) — агрегируем из `:update`-событий.
+  session totals) — агрегируем из терминальных ответов шва (`:update`-снимки —
+  только диагностика/turnsObserved; уточнено 2026-10-31 при ревью спеки 001:
+  суммирование кумулятивных снимков давало бы двойной счёт).
 - Шов недоступен (`delegationAvailable(pi) === false` или `unavailable_context`) →
   честная деградация «делай работу сам» (ветка atomic-agent).
 - Расширение = обычный Node-процесс: `setTimeout`/`Promise` доступны (в отличие от

@@ -115,7 +115,9 @@ SO THAT кривой вызов не сжигает токены, а контр�
 WHEN вызов называет `maxWorkers`
 THE SYSTEM SHALL держать одновременно ≤ min(maxWorkers, tasks.length, maxParallel,
 per-model cap) воркеров; WHEN не называет — использовать `config.workers`;
-оставшиеся задачи — очередь FIFO
+оставшиеся задачи — очередь FIFO; WHEN `workerModels` пуст — ВСЕ задачи немедленно
+failed(no-available-model), вызов завершается штатно (зависание пула с width=0
+недопустимо, B-FINAL)
 SO THAT параллелизм никогда не превышает физику машины и конфиг оператора.
 
 ### FR-004: Cap на модель — Must Have

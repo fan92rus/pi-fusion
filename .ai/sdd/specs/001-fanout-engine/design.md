@@ -1,7 +1,7 @@
 # Design: fanout-engine (F04–F07, F09 + FR-011 failover)
 
 > Requirements: @[requirements.md](requirements.md)
-> Status: Draft (rev.4.4 — вердикт R7 ГОДЕН; закрыты его миноры/нитсы: usage-проза с cancelled, FR-010 Esc-исключение, maxWorkers-строка, maxParallel в E2E, метки унифицированы)
+> Status: Draft (rev.4.5 — финальное ревью пакета: терминальное поведение пустой ротации workerModels; предшествующие — R1-R7, вердикт R7 ГОДЕН)
 > Last Updated: 2026-10-31
 
 ## 1. Executive Summary
@@ -313,6 +313,11 @@ src/slash/prompt-template-bridge.js, src/api/delegation.d.ts; R4 не нашёл
   Пример: maxWorkers=9, models=2 → `[{perModel, requested:9, applied:4}]`.
 - **Расписание**: dispatch при `running < width` **и** существует модель
   `m ∈ activeModels` с `runningByModel[m] < 2`; иначе ожидание релиза слота.
+- **Пустая ротация** (B-FINAL): `workerModels: []` — конфигурационная ошибка;
+  pre-flight пула: ВСЕ задачи немедленно `failed(no-available-model)`, вызов
+  завершается штатно. БЕЗ этого правила width = min(…, capacity = 2 × 0) = 0
+  и расписание ждёт вечно. ClampRow `{noModels, requested: W_req, applied: 0}`
+  в диагностике.
 - **Ротация**: round-robin по `workerModels` с пропуском моделей без ёмкости.
 - **Исключение отказавшей модели** (исправление B1-R3): из `activeModels` модель
   удаляется ТОЛЬКО при подтверждённом квотном отказе — `hostError` с
@@ -455,6 +460,7 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 | Все workerModels заняты | ожидание релиза слота |
 | Единственная модель: timeout/interrupted задачи | задача failed с исходной причиной (failover-кандидата нет), модель остаётся в ротации, вызов продолжается (B1-R3) |
 | Единственная модель: подтверждённый 429 (rate_limited) | модель исключается → очередь дренится failed(no-available-model); бегущие дети дорабатывают штатно |
+| `workerModels: []` (пустая ротация) | pre-flight пула: все задачи немедленно failed(no-available-model), вызов завершается — никакого ожидания (B-FINAL; иначе width=0 и расписание висит вечно) |
 | id > 200 символов (полный requestId > 256) или с CR/LF | ошибка валидации до fan-out (иначе мост молчит до grace — M9-R3, m1-R5) |
 | Failover: модель A умерла, модель B свободна | та же задача в голову FIFO, continuation-бриф, attempts+1 |
 | Failover: попытки исчерпаны (3) | failed(failover-exhausted) |
@@ -511,7 +517,9 @@ Continuation-бриф (FR-011) = тот же шаблон + заголовок �
 - Расписание: FIFO при width < tasks; per-model ≤2 при 1/2/3 моделях; round-robin.
 - Дренаж: единственная модель + подтверждённый 429 (rate_limited) → очередь
   failed(no-available-model), вызов завершается; НО timeout на единственной модели
-  дренирования НЕ даёт (задача failed, остальные живут — B1-R3 тест).
+  дренирования НЕ даёт (задача failed, остальные живут — B1-R3 тест);
+  **пустая ротация** `workerModels: []` → все failed(no-available-model) сразу,
+  тест с fake-таймерами: после тиков вперёд очередь НЕ оживает и вызов завершён (B-FINAL).
 - Failover: триггеры (timeout/interrupted/hostError attributable), кап 2 подмен,
   смена модели, continuation-бриф содержит причину и запрет пере-делки, non-модельные
   отказы НЕ подменяются; timeout НЕ исключает модель из ротации (B1-R3); **B-3-R5**:

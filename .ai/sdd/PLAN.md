@@ -37,7 +37,8 @@
 - Тул `fusion_delegate` с контрактом atomic-agent (tasks/files/maxWorkers/contract) и
   структурным отчётом воркера; клампы ширины; пул с per-model cap ≤ 2; ротация моделей.
 - Delegation-шов клиент (порт `council-delegation.ts`): request/response по requestId,
-  таймаут+15s grace, usage-агрегация из `:update`, dispose.
+  таймаут+15s grace, usage только из терминальных ответов (`:update` — лишь
+  диагностика и turnsObserved; уточнено при ревью спеки 001), dispose.
 - Агент `fusion-worker.md` (allowlist тулов, политика, fresh) + установка в
   `~/.pi/agent/agents/`.
 - Гайданс `### fusion` через `before_agent_start` (append, идемпотентно).
@@ -83,7 +84,7 @@
 | F03 | fusion-worker-agent | `agents/fusion-worker.md` | Отдельный агент: allowlist `read, grep, find, ls, bash, edit, write`, политика воркера (в т.ч. запустить проверки и приложить вывод в `evidence`), `defaultContext: fresh`, `inheritSkills: false`; установщик файла в `~/.pi/agent/agents/` | Агент резолвится pi-subagents; в allowlist нет fusion/subagent/codemode |
 | F04 | delegate-tool | `tool.ts` | Тул `fusion_delegate`: контракт atomic-agent (tasks/id/instructions/title/deliverable/files/maxSteps/timeoutMs, maxWorkers, contract), parse/validate, `isError`-семантика для кривого контракта | Контракт принимается/отклоняется как в atomic-agent; тесты на схему |
 | F05 | delegation-client | `delegation.ts` | Порт шва из pi-autoresearch: события request/response, маршрутизация requestId, ownerRunId `fusion-<seq>-<ts>`, timeout+15s, dispose, usage — только терминальные ответы (Σ по попыткам; `:update`-снимки НЕ суммируются — лишь диагностика и счётчик `turns` на ребёнка: честный сигнал «воркер исполнил хоть что-то» — вход barren-детекции F19) | Смоук на fake-pi: ответ маршрутизируется; usage и turns попадают в result |
-| F06 | fanout-pool | `pool.ts` | Пул ширины: `maxWorkers` (кламп ≤ tasks, ≤ maxParallel, per-model ≤ 2), FIFO-очередь, ротация `workerModels`, результат в порядке индексов задач, флаги клампа в result | Тесты: порядок, клампы, cap на модель |
+| F06 | fanout-pool | `pool.ts` | Пул ширины: `maxWorkers` (кламп ≤ tasks, ≤ maxParallel, per-model ≤ 2), FIFO-очередь, ротация `workerModels`, результат в порядке индексов задач, флаги клампа в result; **model-failover (FR-011) — часть пула**: подмена модели ≤ 2/задачу, continuation-бриф, пустая ротация → все failed(no-available-model) | Тесты: порядок, клампы, cap на модель, failover-путь (включая duplicate_node-защиту попытко-специфичным nodeId), пустая ротация без зависания |
 | F07 | worker-report | `report.ts` | Структурная схема отчёта (status/summary/filesChanged/evidence/residualRisks/replacedExistingFiles/question), валидация, 1 ретрай при schema-missing | Кривой отчёт → 1 ретрай → failed с пометкой |
 | F08 | fusion-guidance | `guidance.ts` | Секция `### fusion` (порт FUSION_GUIDANCE + machine facts) через `before_agent_start`: append в `systemPromptOptions`, идемпотентно, снимается при off; НИКОГДА `forceSystemPrompt`. Стратегия верификации лида: evidence из отчётов воркеров и/или делегирование проверок свежему воркеру (своего bash у лида нет) | Секция появляется/исчезает с режимом; нет дублей |
 | F09 | degradation | `delegation.ts` | `delegationAvailable(pi) === false` или `unavailable_context` → сообщение «fusion недоступен — делай работу сам» | Тест деградации; лид получает действенную ошибку |

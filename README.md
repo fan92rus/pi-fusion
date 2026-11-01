@@ -13,12 +13,13 @@ design rev.5.2; plan `.ai/sdd/PLAN.md`).
 ## Install
 
 ```sh
-pi install /path/to/this/repo          # or add to `packages` in settings.json
-# or one-off:
-pi -e ./extensions/pi-fusion "…"
+pi install https://github.com/fan92rus/pi-fusion
+# one-off without touching settings:
+pi -e https://github.com/fan92rus/pi-fusion "…"
 ```
 
-Requires node ≥ 22 (TypeBox sources load via jiti; no build step).
+Requires node ≥ 22 (TypeBox sources load via jiti; no build step). CI runs
+the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 
 ## Configuration — `~/.pi/agent/fusion.json`
 

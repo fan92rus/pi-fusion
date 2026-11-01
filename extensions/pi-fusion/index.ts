@@ -30,6 +30,7 @@ import { validateFusionCall } from "./contract/validate.ts";
 import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts";
 import { registerFusionGuidance } from "./guidance.ts";
 import { type DegradationRefusal, type FanoutConfig, runFanout } from "./pool/fanout.ts";
+import { registerLeadRestrictions } from "./restrictions.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
 import { createFanoutSeamClient } from "./seam/client.ts";
@@ -185,14 +186,24 @@ function makeFusionCommandDeps(
 }
 
 /**
- * Extension entry: tool + feature flag, the per-run guidance section and the
- * `/fusion` command, all reading the same fusion.json fresh per use.
+ * Extension entry: tool + feature flag, the per-run guidance section, the
+ * `/fusion` command and the F19 lead gate — all reading the same fusion.json.
  */
 export default function fusionExtension(
   pi: ExtensionAPI,
   options: FusionExtensionOptions = {},
 ): void {
+  const startup = loadFusionConfig(options.configPath);
   registerFusionDelegate(pi, () => loadFusionConfig(options.configPath));
   registerFusionGuidance(pi, () => loadFusionConfig(options.configPath));
   registerFusionCommand(pi, (ctx) => makeFusionCommandDeps(pi, ctx, options));
+  // F19: while fusion is on, the lead session cannot call its own
+  // write/edit/bash — the doing belongs to the workers. isEnabled is read
+  // fresh per call, so /fusion off frees the lead without a reload; the
+  // blocked list binds the startup leadBlockedTools (the command never edits
+  // that field).
+  registerLeadRestrictions(pi, {
+    isEnabled: () => loadFusionConfig(options.configPath).enabled,
+    blockedTools: startup.leadBlockedTools,
+  });
 }

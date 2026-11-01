@@ -7,6 +7,7 @@
  * terminal-only usage with "0 = no data", per-attempt turnsObserved.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WorkerReportSchema } from "../extensions/pi-fusion/report/schema.ts";
 import { isSeamAvailable } from "../extensions/pi-fusion/seam/availability.ts";
 import {
   createFanoutSeamClient,
@@ -118,6 +119,18 @@ describe("request shape (§5 Seam Protocol)", () => {
       task: "brief",
       toolBudget: { hard: 120, block: TOOL_BLOCK },
       result: { kind: "structured" },
+    });
+  });
+
+  it("sends the report schema as plain JSON over the seam (live-smoke regression, bd pi-fusion-d7g)", () => {
+    void runTask({ nodeId: "task-1#a1" });
+    const request = lastRequest();
+    // pi-subagents clones result.schema with a plain-JSON walker; TypeBox
+    // artifacts (the if/then values of the report schema) must never reach
+    // the wire, or every structured request is rejected as invalid.
+    expect(request.result).toEqual({
+      kind: "structured",
+      schema: JSON.parse(JSON.stringify(WorkerReportSchema)),
     });
   });
 

@@ -318,7 +318,15 @@ export function createFanoutSeamClient(options: FanoutSeamClientOptions): Fanout
         model: req.model,
         timeoutMs: req.timeoutMs,
         toolBudget: { hard: req.hardToolBudget, block: [...BLOCKED_TOOLS] },
-        result: { kind: "structured", schema: WorkerReportSchema as Record<string, unknown> },
+        result: {
+          kind: "structured",
+          // Live-smoke finding (bd pi-fusion-d7g): pi-subagents clones the
+          // schema with a plain-JSON walker that rejects TypeBox's non-JSON
+          // artifacts (the if/then values the report schema carries), so the
+          // wire schema is re-encoded to pure JSON here — the seam boundary
+          // owns the wire format (design rev.5.2 §4, risk R1 precedent).
+          schema: JSON.parse(JSON.stringify(WorkerReportSchema)) as Record<string, unknown>,
+        },
       };
       return new Promise<SeamOutcome>((resolve) => {
         const entry: PendingRun = {

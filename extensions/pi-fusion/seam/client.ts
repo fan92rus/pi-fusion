@@ -98,7 +98,7 @@ interface SeamRequest {
  */
 export type SeamOutcome =
   | { kind: "report"; report: WorkerReport; usage?: UsageTotals }
-  | { kind: "schemaFailed"; usage?: UsageTotals }
+  | { kind: "schemaFailed"; violatedFields?: string[]; usage?: UsageTotals }
   | { kind: "timeout"; usage?: UsageTotals }
   | { kind: "interrupted"; usage?: UsageTotals }
   | { kind: "cancelled"; usage?: UsageTotals }
@@ -229,8 +229,12 @@ function toOutcome(response: SeamResponse): SeamOutcome {
           ...carried,
         };
       }
-      if (violatedFields(result.value).length > 0) {
-        return { kind: "schemaFailed", ...carried };
+      const fields = violatedFields(result.value);
+      if (fields.length > 0) {
+        // Completed-but-invalid: retain the exact violated fields for the
+        // FR-007 corrective brief. The host-refused structured_output_failed
+        // mapping above carries none — the value never reached the engine.
+        return { kind: "schemaFailed", violatedFields: fields, ...carried };
       }
       return { kind: "report", report: result.value as WorkerReport, ...carried };
     }

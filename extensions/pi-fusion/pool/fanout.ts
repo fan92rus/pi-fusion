@@ -371,7 +371,7 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
         taskId: task.id,
         firstOutcome: outcome,
         model,
-        violatedFields: [],
+        violatedFields: outcome.violatedFields ?? [],
         attemptTimeoutMs: budget.timeoutMs,
         hardToolBudget: budget.hardToolBudget,
       }).then((retried) => {

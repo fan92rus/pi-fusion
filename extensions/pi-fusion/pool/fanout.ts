@@ -34,6 +34,7 @@
 import { renderBrief } from "../briefs.ts";
 import type { ValidatedFusionCall, ValidatedTask } from "../contract/validate.ts";
 import { runReportRetry } from "../report/retry.ts";
+import type { WorkerReport } from "../report/schema.ts";
 import type { FanoutSeamClient, SeamOutcome } from "../seam/client.ts";
 import type { ClampRow, FanoutResult, TaskResult, UsageTotals } from "../types.ts";
 
@@ -185,6 +186,21 @@ function noModelResult(task: ValidatedTask): TaskResult {
   return failedTask(task.id, 0, "no-available-model", "no available model left in the rotation");
 }
 
+/** Role report fields a report may carry; copied through when present (§4.8, B3). */
+const ROLE_REPORT_FIELDS = ["sources", "unknowns", "findings", "checksRun", "verdict"] as const;
+
+/** Copies the role fields the report carried; worker reports carry none. */
+function roleReportFields(
+  report: WorkerReport,
+): Partial<Pick<TaskResult, (typeof ROLE_REPORT_FIELDS)[number]>> {
+  const carried = {} as Record<string, unknown>;
+  for (const field of ROLE_REPORT_FIELDS) {
+    const value = (report as Record<string, unknown>)[field];
+    if (value !== undefined) carried[field] = value;
+  }
+  return carried as Partial<Pick<TaskResult, (typeof ROLE_REPORT_FIELDS)[number]>>;
+}
+
 /** Maps one seam outcome onto the task's row (design §5 table, §4 result). */
 function resultFromOutcome(
   task: ValidatedTask,
@@ -211,6 +227,9 @@ function resultFromOutcome(
         evidence: [...report.evidence],
         residualRisks: [...report.residualRisks],
         ...(report.question !== undefined ? { question: report.question } : {}),
+        // Role fields the report carried (§4.8, B3): scout sources,
+        // researcher sources+unknowns, reviewer findings+checksRun+verdict.
+        ...roleReportFields(report),
         attempts,
       });
     }
@@ -376,6 +395,8 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
       }
       return runReportRetry(client, {
         taskId: task.id,
+        role: task.role,
+        brief: renderBrief(task, call.contract, deps.originalRequest),
         firstOutcome: outcome,
         model,
         violatedFields: outcome.violatedFields ?? [],
@@ -415,6 +436,7 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
         .run({
           nodeId: `${task.id}#a1`,
           task: renderBrief(task, call.contract, deps.originalRequest),
+          role: task.role,
           model,
           timeoutMs,
           hardToolBudget,

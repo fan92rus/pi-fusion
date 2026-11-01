@@ -33,6 +33,23 @@ export const MAX_CONTRACT_PROVIDES = 64;
 /** Entries the contract's `checks` list may carry. */
 export const MAX_CONTRACT_CHECKS = 16;
 
+/**
+ * The role of one delegated task (design §4.1): which agent profile runs it
+ * and which report schema its child must answer with. Absent = `worker` —
+ * the validator normalises before anything downstream sees the field.
+ */
+export const FUSION_ROLES = ["worker", "scout", "researcher", "reviewer"] as const;
+export type FusionRole = (typeof FUSION_ROLES)[number];
+
+/**
+ * The researcher's web-tool composition (design §4.9.3): exactly one
+ * researcher profile matches it, so no profile ever carries a list of
+ * "optional" tool names. Default `none` — the only composition that can
+ * never fail a launch because of the web.
+ */
+export const RESEARCHER_WEB_MODES = ["none", "web", "codex", "both"] as const;
+export type ResearcherWebMode = (typeof RESEARCHER_WEB_MODES)[number];
+
 /** What a `provides` entry can name (`file` uses `name` as the path). */
 export const CONTRACT_PROVIDE_KINDS = [
   "symbol",
@@ -76,6 +93,12 @@ export const FusionTaskSchema = Type.Object(
     timeoutMs: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
     /** Advisory estimate in seconds; accepted and ignored in 001. */
     etaSeconds: Type.Optional(Type.Number()),
+    /**
+     * Which agent profile runs this task (design §4.1). Optional on the
+     * wire; the validator always writes a concrete value downstream, and
+     * an unknown literal is refused before any worker starts (FR-001).
+     */
+    role: Type.Optional(Type.Union(FUSION_ROLES.map((role) => Type.Literal(role)))),
   },
   { additionalProperties: false },
 );
@@ -204,6 +227,17 @@ export const TaskResultSchema = Type.Object(
     turns: Type.Optional(Type.Number()),
     /** Last :update snapshot of the final attempt; fallback for F19. */
     turnsObserved: Type.Optional(Type.Number()),
+    /**
+     * Role report fields (design §4.8), copied through when the report
+     * carried them — scout `sources`, researcher `sources`+`unknowns`,
+     * reviewer `findings`+`checksRun`+`verdict`. Absent = the role did
+     * not report them; never fabricated for a worker row.
+     */
+    sources: Type.Optional(Type.Array(Type.String())),
+    unknowns: Type.Optional(Type.Array(Type.String())),
+    findings: Type.Optional(Type.Array(Type.String())),
+    checksRun: Type.Optional(Type.Array(Type.String())),
+    verdict: Type.Optional(Type.Union([Type.Literal("pass"), Type.Literal("fail")])),
   },
   { additionalProperties: false },
 );

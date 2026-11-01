@@ -11,9 +11,9 @@
  * pi-subagents is not a dependency of pi-fusion.
  */
 import type { EventBus } from "@earendil-works/pi-coding-agent";
-import { type WorkerReport, WorkerReportSchema } from "../report/schema.ts";
+import { reportSchemaForRole, type WorkerReport } from "../report/schema.ts";
 import { violatedFields } from "../report/validate.ts";
-import type { ProgressSnapshot, UsageTotals } from "../types.ts";
+import type { FusionRole, ProgressSnapshot, ResearcherWebMode, UsageTotals } from "../types.ts";
 
 export const SEAM_REQUEST_EVENT = "prompt-template:subagent:request";
 export const SEAM_UPDATE_EVENT = "prompt-template:subagent:update";
@@ -23,9 +23,79 @@ export const SEAM_CANCEL_EVENT = "prompt-template:subagent:cancel";
 /** Local deadline = timeoutMs + this grace; expiry sends :cancel (design §5). */
 export const SEAM_GRACE_MS = 15_000;
 
-const WORKER_AGENT = "fusion-worker";
-/** Tools a fusion worker may never call (design §5 toolBudget.block). */
+/**
+ * The agent profile per role (design §4.4). The researcher row is the base
+ * name — the live name carries the composition suffix chosen by the
+ * `researcherWeb` config (§4.9.3), exactly one profile per composition.
+ */
+const ROLE_AGENTS: Record<FusionRole, string> = {
+  worker: "fusion-worker",
+  scout: "fusion-scout",
+  researcher: "fusion-researcher",
+  reviewer: "fusion-reviewer",
+};
+
+/** Researcher profile suffix per web composition (design §4.9.3). */
+const RESEARCHER_SUFFIX: Record<ResearcherWebMode, string> = {
+  none: "",
+  web: "-web",
+  codex: "-codex",
+  both: "-both",
+};
+
+/**
+ * Tools a fusion worker may never call (design §5 toolBudget.block) — the
+ * worker row of the role table, byte-identical to the pre-roles constant.
+ */
 const BLOCKED_TOOLS = ["fusion_delegate", "subagent", "codemode"];
+
+/**
+ * The role table's `toolBudget.block` row (design §4.4): the worker block
+ * plus the mutators each non-implementation role must not call. A block
+ * list narrows the surface — it is NOT isolation (§9.1): a role with `bash`
+ * can still write through it.
+ */
+const ROLE_TOOL_BLOCK: Record<FusionRole, string[]> = {
+  worker: [...BLOCKED_TOOLS],
+  scout: [...BLOCKED_TOOLS, "edit", "write", "bash"],
+  researcher: [...BLOCKED_TOOLS, "edit", "write", "bash"],
+  reviewer: [...BLOCKED_TOOLS, "edit", "write"],
+};
+
+/**
+ * The agent name for a role under the caller's researcher composition
+ * (design §4.9.3): non-researcher roles ignore the composition.
+ */
+export function agentNameForRole(role: FusionRole, researcherWeb: ResearcherWebMode): string {
+  return role === "researcher"
+    ? `${ROLE_AGENTS.researcher}${RESEARCHER_SUFFIX[researcherWeb]}`
+    : ROLE_AGENTS[role];
+}
+
+/**
+ * Hard cap on the JSON the seam re-serialises of a schema-rejected answer
+ * (design §4.5.2): the corrective brief carries the rejected value so a
+ * fresh child can re-render the report honestly — clipped with an explicit
+ * truncation note, never silently.
+ */
+export const REJECTED_VALUE_CHAR_LIMIT = 16_000;
+
+/**
+ * The rejected answer as size-limited JSON (design §4.5.2). `value` is the
+ * parsed object the engine saw — re-encoded, not reconstructed; over the
+ * limit it is cut with an explicit truncation note. Used only in the
+ * `schemaFailed` branch, where the engine computed the value.
+ */
+export function clipRejectedJson(value: unknown): string {
+  const json = JSON.stringify(value) ?? "";
+  if (json.length <= REJECTED_VALUE_CHAR_LIMIT) return json;
+  let cut = json.slice(0, REJECTED_VALUE_CHAR_LIMIT);
+  // Never end the cut on a lone high surrogate (the briefs.ts precedent):
+  // half an emoji decodes to U+FFFD on the child's side.
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return `${cut}\n[обрезано: исходный ответ — ${json.length.toLocaleString("en-US")} символов]`;
+}
 
 /** Window (quota) markers, Q-002 class 1 — case-insensitive substrings. */
 const WINDOW_MARKERS = /quota|rate limit exceeded|limit reached|(?:plan|billing) limit/i;
@@ -95,10 +165,13 @@ interface SeamRequest {
  * Result of one run() — the mapping of the seam's answer (design §5 table).
  * `usage` is attached to every terminal outcome that carried it; the local
  * grace timeout and the dispose-resolve carry none (= unknown, not zero).
+ * `schemaFailed` additionally carries `rejectedJson` when the engine saw a
+ * value — the size-limited JSON of exactly what was rejected (§4.5.2, B3);
+ * host-refused rejections have no value and carry none.
  */
 export type SeamOutcome =
   | { kind: "report"; report: WorkerReport; usage?: UsageTotals }
-  | { kind: "schemaFailed"; violatedFields?: string[]; usage?: UsageTotals }
+  | { kind: "schemaFailed"; violatedFields?: string[]; rejectedJson?: string; usage?: UsageTotals }
   | { kind: "timeout"; usage?: UsageTotals }
   | { kind: "interrupted"; usage?: UsageTotals }
   | { kind: "cancelled"; usage?: UsageTotals }
@@ -116,6 +189,8 @@ export interface SeamRunRequest {
   /** `<task.id>#a<attempt>`; the attempt suffix makes each retry a new node. */
   nodeId: string;
   task: string;
+  /** The task's normalised role: picks the agent profile, schema and block. */
+  role: FusionRole;
   model: string;
   timeoutMs: number;
   hardToolBudget: number;
@@ -142,11 +217,18 @@ export interface FanoutSeamClientOptions {
   events: EventBus;
   /** Session cwd sent with every worker request. */
   cwd: string;
+  /**
+   * The researcher web composition (design §4.9.3); default `none`. Picks
+   * the researcher profile variant the child resolves by name.
+   */
+  researcherWeb?: ResearcherWebMode;
 }
 
 interface PendingRun {
   readonly requestId: string;
   readonly nodeId: string;
+  /** The run's normalised role — the outcome mapping validates by it. */
+  readonly role: FusionRole;
   readonly onProgress?: (snapshot: ProgressSnapshot) => void;
   readonly resolve: (outcome: SeamOutcome) => void;
   timer?: ReturnType<typeof setTimeout>;
@@ -197,7 +279,7 @@ function carriedUsage(usage: SeamUsage | undefined): { usage?: UsageTotals } {
 }
 
 /** Maps one terminal seam response onto SeamOutcome (design §5 table). */
-function toOutcome(response: SeamResponse): SeamOutcome {
+function toOutcome(response: SeamResponse, role: FusionRole): SeamOutcome {
   const carried = carriedUsage(response.usage);
   const message = response.error ?? response.status;
   switch (response.status) {
@@ -236,12 +318,20 @@ function toOutcome(response: SeamResponse): SeamOutcome {
           ...carried,
         };
       }
-      const fields = violatedFields(result.value);
+      const fields = violatedFields(result.value, role);
       if (fields.length > 0) {
         // Completed-but-invalid: retain the exact violated fields for the
-        // FR-007 corrective brief. The host-refused structured_output_failed
-        // mapping above carries none — the value never reached the engine.
-        return { kind: "schemaFailed", violatedFields: fields, ...carried };
+        // FR-007 corrective brief, plus the size-limited JSON of the value
+        // the engine saw (§4.5.2, B3) — a fresh retry child can re-render
+        // the report only from what was actually rejected. The host-refused
+        // structured_output_failed mapping above carries neither — the
+        // value never reached the engine.
+        return {
+          kind: "schemaFailed",
+          violatedFields: fields,
+          rejectedJson: clipRejectedJson(result.value),
+          ...carried,
+        };
       }
       return { kind: "report", report: result.value as WorkerReport, ...carried };
     }
@@ -261,6 +351,7 @@ function toOutcome(response: SeamResponse): SeamOutcome {
 
 export function createFanoutSeamClient(options: FanoutSeamClientOptions): FanoutSeamClient {
   const { events, cwd } = options;
+  const researcherWeb: ResearcherWebMode = options.researcherWeb ?? "none";
   fanoutSeq += 1;
   // One ownerRunId per fan-out (design §5): fusion-<seq>-<ts>.
   const ownerRunId = `fusion-${fanoutSeq}-${Date.now()}`;
@@ -293,7 +384,7 @@ export function createFanoutSeamClient(options: FanoutSeamClientOptions): Fanout
   const onResponse = (response: SeamResponse): void => {
     const entry = pending.get(response.requestId);
     if (entry === undefined) return;
-    settle(entry, toOutcome(response));
+    settle(entry, toOutcome(response, entry.role));
   };
 
   const offs: Array<() => void> = [
@@ -311,27 +402,32 @@ export function createFanoutSeamClient(options: FanoutSeamClientOptions): Fanout
         requestId,
         ownerRunId,
         nodeId: req.nodeId,
-        agent: WORKER_AGENT,
+        agent: agentNameForRole(req.role, researcherWeb),
         task: req.task,
         context: "fresh",
         cwd,
         model: req.model,
         timeoutMs: req.timeoutMs,
-        toolBudget: { hard: req.hardToolBudget, block: [...BLOCKED_TOOLS] },
+        toolBudget: { hard: req.hardToolBudget, block: [...ROLE_TOOL_BLOCK[req.role]] },
         result: {
           kind: "structured",
-          // Live-smoke finding (bd pi-fusion-d7g): pi-subagents clones the
-          // schema with a plain-JSON walker that rejects TypeBox's non-JSON
-          // artifacts (the if/then values the report schema carries), so the
-          // wire schema is re-encoded to pure JSON here — the seam boundary
-          // owns the wire format (design rev.5.2 §4, risk R1 precedent).
-          schema: JSON.parse(JSON.stringify(WorkerReportSchema)) as Record<string, unknown>,
+          // Role schema (design §4.8). Live-smoke finding (bd pi-fusion-d7g):
+          // pi-subagents clones the schema with a plain-JSON walker that
+          // rejects TypeBox's non-JSON artifacts (the if/then values the
+          // report schemas carry), so the wire schema is re-encoded to pure
+          // JSON here — the seam boundary owns the wire format (design
+          // rev.5.2 §4, risk R1 precedent).
+          schema: JSON.parse(JSON.stringify(reportSchemaForRole(req.role))) as Record<
+            string,
+            unknown
+          >,
         },
       };
       return new Promise<SeamOutcome>((resolve) => {
         const entry: PendingRun = {
           requestId,
           nodeId: req.nodeId,
+          role: req.role,
           ...(req.onProgress !== undefined ? { onProgress: req.onProgress } : {}),
           resolve,
         };

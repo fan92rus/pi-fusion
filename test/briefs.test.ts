@@ -14,7 +14,13 @@ import {
 } from "../extensions/pi-fusion/contract/validate.ts";
 
 function task(overrides: Partial<ValidatedTask> = {}): ValidatedTask {
-  return { id: "t1", title: "Fix the thing", instructions: "Do the thing.", ...overrides };
+  return {
+    id: "t1",
+    title: "Fix the thing",
+    instructions: "Do the thing.",
+    role: "worker",
+    ...overrides,
+  };
 }
 
 const contract: ValidatedContract = {

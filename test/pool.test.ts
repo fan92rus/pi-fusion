@@ -49,7 +49,7 @@ const USAGE: DelegationUsage = {
 };
 
 function makeTask(id: string, extra: Partial<ValidatedTask> = {}): ValidatedTask {
-  return { id, title: id, instructions: `instructions for ${id}`, ...extra };
+  return { id, title: id, instructions: `instructions for ${id}`, role: "worker", ...extra };
 }
 
 function makeCall(tasks: ValidatedTask[], maxWorkers?: number): ValidatedFusionCall {

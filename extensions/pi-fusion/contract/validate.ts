@@ -25,6 +25,8 @@ import {
   type ContractProvide,
   type ContractRequire,
   type DelegateContract,
+  FUSION_ROLES,
+  type FusionRole,
   type FusionTask,
   MAX_CONTRACT_CHECKS,
   MAX_CONTRACT_INPUTS,
@@ -47,8 +49,11 @@ const GLOB_CHARS = /[*?[\]{}]/;
 /** The contract after validation: `warnings` is computed here, never input. */
 export type ValidatedContract = DelegateContract & { warnings?: string[] };
 
-/** A task after validation: `title` is always set, `etaSeconds` is gone. */
-export type ValidatedTask = Omit<FusionTask, "title" | "etaSeconds"> & { title: string };
+/** A task after validation: `title` and `role` are always set, `etaSeconds` is gone. */
+export type ValidatedTask = Omit<FusionTask, "title" | "etaSeconds" | "role"> & {
+  title: string;
+  role: FusionRole;
+};
 
 export interface ValidatedFusionCall {
   tasks: ValidatedTask[];
@@ -184,6 +189,7 @@ const TASK_KEYS = [
   "maxSteps",
   "timeoutMs",
   "etaSeconds",
+  "role",
 ];
 
 function parseTask(raw: unknown, label: string, seen: Set<string>): ValidatedTask {
@@ -221,10 +227,22 @@ function parseTask(raw: unknown, label: string, seen: Set<string>): ValidatedTas
   const maxSteps = parseBudget(raw.maxSteps, `${label}.maxSteps`);
   const timeoutMs = parseBudget(raw.timeoutMs, `${label}.timeoutMs`);
 
+  // The role is normalised here (the `title` precedent): downstream — briefs,
+  // pool, seam, retry — never sees the optional. Absent = `worker`, byte-for-byte
+  // today's behavior; an unknown literal is refused before any worker starts.
+  let role: FusionRole = "worker";
+  if (raw.role !== undefined) {
+    if (typeof raw.role !== "string" || !(FUSION_ROLES as readonly string[]).includes(raw.role)) {
+      refuse(`role must be one of ${FUSION_ROLES.join(", ")}`, `${label}.role`);
+    }
+    role = raw.role as FusionRole;
+  }
+
   return {
     id,
     title,
     instructions,
+    role,
     ...(deliverable === undefined ? {} : { deliverable }),
     ...(files !== undefined && files.length > 0 ? { files } : {}),
     ...(maxSteps === undefined ? {} : { maxSteps }),

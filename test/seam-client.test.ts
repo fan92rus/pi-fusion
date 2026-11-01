@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerReportSchema } from "../extensions/pi-fusion/report/schema.ts";
 import { isSeamAvailable } from "../extensions/pi-fusion/seam/availability.ts";
 import {
+  clipRejectedJson,
   createFanoutSeamClient,
   type FanoutSeamClient,
+  REJECTED_VALUE_CHAR_LIMIT,
   SEAM_GRACE_MS,
   type SeamOutcome,
 } from "../extensions/pi-fusion/seam/client.ts";
@@ -76,6 +78,7 @@ function runTask(
   return ctx.client.run({
     nodeId: overrides.nodeId ?? "task-1#a1",
     task: "brief",
+    role: "worker",
     model: "model-a",
     timeoutMs: overrides.timeoutMs ?? 60_000,
     hardToolBudget: 120,
@@ -169,6 +172,7 @@ const respondWith =
     const promise = c.client.run({
       nodeId: "task-1#a1",
       task: "brief",
+      role: "worker",
       model: "model-a",
       timeoutMs: 60_000,
       hardToolBudget: 120,
@@ -234,6 +238,7 @@ const STATUS_TABLE: Record<DelegationStatus, StatusRow> = {
       const promise = c.client.run({
         nodeId: "task-1#a1",
         task: "brief",
+        role: "worker",
         model: "model-a",
         timeoutMs: 60_000,
         hardToolBudget: 120,
@@ -262,6 +267,7 @@ const STATUS_TABLE: Record<DelegationStatus, StatusRow> = {
       void c.client.run({
         nodeId: "task-1#a1",
         task: "first",
+        role: "worker",
         model: "model-a",
         timeoutMs: 60_000,
         hardToolBudget: 120,
@@ -269,6 +275,7 @@ const STATUS_TABLE: Record<DelegationStatus, StatusRow> = {
       return c.client.run({
         nodeId: "task-1#a1",
         task: "second",
+        role: "worker",
         model: "model-a",
         timeoutMs: 60_000,
         hardToolBudget: 120,
@@ -313,6 +320,7 @@ describe("11-status mapping table (design §5)", () => {
     const promise = ctx.client.run({
       nodeId: "task-1#a1",
       task: "brief",
+      role: "worker",
       model: "model-a",
       timeoutMs: 60_000,
       hardToolBudget: 120,
@@ -653,5 +661,189 @@ describe("dispose()", () => {
   it("is idempotent", () => {
     ctx.client.dispose();
     expect(() => ctx.client.dispose()).not.toThrow();
+  });
+});
+
+describe("role table (design §4.4)", () => {
+  function lastRequestOf(pi: FakePi): Record<string, unknown> {
+    const request = pi.host.requests.at(-1);
+    if (!request) throw new Error("no request reached the bus");
+    return request as unknown as Record<string, unknown>;
+  }
+
+  it("worker row is byte-identical to the pre-roles constants (pin)", () => {
+    const pi = createFakePi();
+    const client = createFanoutSeamClient({ events: pi.events, cwd: "/repo" });
+    void client.run({
+      nodeId: "task-1#a1",
+      task: "brief",
+      role: "worker",
+      model: "model-a",
+      timeoutMs: 60_000,
+      hardToolBudget: 120,
+    });
+    const request = lastRequestOf(pi);
+    expect(request.agent).toBe("fusion-worker");
+    expect(request.toolBudget).toEqual({ hard: 120, block: TOOL_BLOCK });
+    const schema = (request.result as { schema?: Record<string, unknown> }).schema ?? {};
+    // The wire schema re-encodes the worker envelope: strict object with the
+    // if/then question rule, no role-specific fields.
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.if).toBeDefined();
+    expect(JSON.stringify(schema)).not.toContain("sources");
+    expect(JSON.stringify(schema)).not.toContain("findings");
+    client.dispose();
+    pi.host.dispose();
+  });
+
+  it("scout row: fusion-scout agent, scout schema (sources), bash blocked", () => {
+    const pi = createFakePi();
+    const client = createFanoutSeamClient({ events: pi.events, cwd: "/repo" });
+    void client.run({
+      nodeId: "s#a1",
+      task: "brief",
+      role: "scout",
+      model: "model-a",
+      timeoutMs: 60_000,
+      hardToolBudget: 120,
+    });
+    const request = lastRequestOf(pi);
+    expect(request.agent).toBe("fusion-scout");
+    expect(request.toolBudget).toEqual({
+      hard: 120,
+      block: [...TOOL_BLOCK, "edit", "write", "bash"],
+    });
+    expect(JSON.stringify((request.result as { schema?: unknown }).schema)).toContain("sources");
+    client.dispose();
+    pi.host.dispose();
+  });
+
+  it("researcher row: profile variant follows researcherWeb (§4.9.3)", () => {
+    const expectations: Array<[("none" | "web" | "codex" | "both") | undefined, string]> = [
+      [undefined, "fusion-researcher"],
+      ["none", "fusion-researcher"],
+      ["web", "fusion-researcher-web"],
+      ["codex", "fusion-researcher-codex"],
+      ["both", "fusion-researcher-both"],
+    ];
+    for (const [mode, agent] of expectations) {
+      const pi = createFakePi();
+      const client = createFanoutSeamClient({
+        events: pi.events,
+        cwd: "/repo",
+        ...(mode !== undefined ? { researcherWeb: mode } : {}),
+      });
+      void client.run({
+        nodeId: "r#a1",
+        task: "brief",
+        role: "researcher",
+        model: "model-a",
+        timeoutMs: 60_000,
+        hardToolBudget: 120,
+      });
+      const request = lastRequestOf(pi) as unknown as Record<string, unknown>;
+      expect(request.agent).toBe(agent);
+      expect(request.toolBudget).toEqual({
+        hard: 120,
+        block: [...TOOL_BLOCK, "edit", "write", "bash"],
+      });
+      const json = JSON.stringify((request.result as { schema?: unknown }).schema);
+      expect(json).toContain("sources");
+      expect(json).toContain("unknowns");
+      client.dispose();
+      pi.host.dispose();
+    }
+  });
+
+  it("reviewer row: fusion-reviewer agent, reviewer schema, bash allowed", () => {
+    const pi = createFakePi();
+    const client = createFanoutSeamClient({ events: pi.events, cwd: "/repo" });
+    void client.run({
+      nodeId: "v#a1",
+      task: "brief",
+      role: "reviewer",
+      model: "model-a",
+      timeoutMs: 60_000,
+      hardToolBudget: 120,
+    });
+    const request = lastRequestOf(pi);
+    expect(request.agent).toBe("fusion-reviewer");
+    expect(request.toolBudget).toEqual({
+      hard: 120,
+      block: [...TOOL_BLOCK, "edit", "write"],
+    });
+    const json = JSON.stringify((request.result as { schema?: unknown }).schema);
+    expect(json).toContain("findings");
+    expect(json).toContain("checksRun");
+    expect(json).toContain("verdict");
+    client.dispose();
+    pi.host.dispose();
+  });
+
+  it("a scout answer violating the ROLE schema maps to schemaFailed with the rejected JSON", async () => {
+    const promise = ctx.client.run({
+      nodeId: "task-1#a1",
+      task: "brief",
+      role: "scout",
+      model: "model-a",
+      timeoutMs: 60_000,
+      hardToolBudget: 120,
+    });
+    const request = lastRequest();
+    // A valid WORKER report is an INVALID scout report (no sources).
+    ctx.pi.host.respond(request.requestId, {
+      result: { kind: "structured", value: VALID_REPORT },
+    });
+    const outcome = await promise;
+    expect(outcome.kind).toBe("schemaFailed");
+    if (outcome.kind !== "schemaFailed") throw new Error("unreachable");
+    expect(outcome.violatedFields).toContain("sources");
+    expect(outcome.rejectedJson).toBe(JSON.stringify(VALID_REPORT));
+  });
+
+  it("host-refused rejection carries no rejectedJson (the value never existed)", async () => {
+    const promise = ctx.client.run({
+      nodeId: "task-1#a1",
+      task: "brief",
+      role: "worker",
+      model: "model-a",
+      timeoutMs: 60_000,
+      hardToolBudget: 120,
+    });
+    const request = lastRequest();
+    ctx.pi.host.respond(request.requestId, { status: "structured_output_failed" });
+    const outcome = await promise;
+    expect(outcome.kind).toBe("schemaFailed");
+    if (outcome.kind !== "schemaFailed") throw new Error("unreachable");
+    expect(outcome.rejectedJson).toBeUndefined();
+  });
+});
+
+describe("clipRejectedJson (§4.5.2)", () => {
+  it("passes a small value through verbatim", () => {
+    expect(clipRejectedJson({ a: 1 })).toBe('{"a":1}');
+  });
+
+  it("clips an oversized value with an explicit truncation note", () => {
+    const big = { s: "x".repeat(20_000) };
+    const clipped = clipRejectedJson(big);
+    expect(clipped.length).toBeLessThan(20_000);
+    expect(clipped).toContain("[обрезано: исходный ответ — ");
+    expect(clipped.startsWith("{")).toBe(true);
+  });
+
+  it("the limit is 16 000 chars (design pin)", () => {
+    expect(REJECTED_VALUE_CHAR_LIMIT).toBe(16_000);
+  });
+
+  it("never ends the cut on a lone high surrogate (review fix M1)", () => {
+    // An emoji whose high surrogate sits at index 15999: a naive slice
+    // ends on 0xd83d and decodes as U+FFFD on the child's side.
+    const prefix = "x".repeat(15_999);
+    const value = { s: prefix + "👍" };
+    const clipped = clipRejectedJson(value);
+    const body = clipped.slice(0, clipped.indexOf("\n[обрезано"));
+    const last = body.charCodeAt(body.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
   });
 });

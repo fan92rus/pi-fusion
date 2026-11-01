@@ -565,3 +565,103 @@ describe("E2E: a child still running on the excluded model is accepted when it c
     expect(byId.get("t11")).toMatchObject({ status: "done", summary: "t11 kept" });
   });
 });
+
+describe("E2E: role reports through the full path (§4.8, §4.11)", () => {
+  it("reviewer report → schemaFailed → role retry (reviewer schema, same agent) → role fields in TaskResult and renderFanoutText", async () => {
+    const { host, execute } = setup(CONFIG);
+    const promise = execute({
+      tasks: [
+        { id: "rev", instructions: "review the diff", role: "reviewer" },
+        { id: "w", instructions: "plain work" },
+      ],
+    });
+    await drive(host, (request) => {
+      if (request.nodeId === "rev#a1") {
+        // A valid WORKER report is an INVALID reviewer report: no findings,
+        // no checksRun, no verdict → schemaFailed with the rejected value.
+        return { result: report("done", "reviewed") };
+      }
+      if (request.nodeId === "rev#a2") {
+        return {
+          result: {
+            kind: "structured" as const,
+            value: {
+              status: "done",
+              summary: "reviewed with findings",
+              filesChanged: [],
+              evidence: ["re-rendered"],
+              residualRisks: [],
+              findings: ["pin drift"],
+              checksRun: ["npm test"],
+              verdict: "fail",
+            },
+          },
+        };
+      }
+      return { result: report("done", "w done") };
+    });
+    const outcome = await promise;
+    const result = asFanout(outcome.structuredContent);
+
+    const a1 = host.requests.find((request) => request.nodeId === "rev#a1");
+    const a2 = host.requests.find((request) => request.nodeId === "rev#a2");
+    expect(a1?.agent).toBe("fusion-reviewer");
+    expect(a2?.agent).toBe("fusion-reviewer"); // the SAME role profile
+    expect(JSON.stringify(a2?.result)).toContain("verdict"); // role schema on the retry
+    expect(a2?.task).toContain("БРИФ ЗАДАЧИ"); // report-only re-rendering context
+    expect(a2?.task).toContain("Реализацию не повторять");
+
+    expect(result.results[0]).toMatchObject({
+      id: "rev",
+      status: "done",
+      attempts: 2,
+      findings: ["pin drift"],
+      checksRun: ["npm test"],
+      verdict: "fail",
+    });
+    expect(result.results[1]).toMatchObject({ id: "w", status: "done", attempts: 1 });
+    expect(result.results[1]?.findings).toBeUndefined(); // worker row stays clean
+
+    // The lead-facing text carries the role fields (counts + verdict).
+    const text = outcome.content[0]?.type === "text" ? outcome.content[0].text : "";
+    expect(text).toContain("verdict: fail");
+    expect(text).toContain("findings: 1");
+    expect(text).toContain("checksRun: 1");
+  });
+
+  it("researcher and scout rows carry their counts; mixed roles share one queue unchanged", async () => {
+    const { host, execute } = setup(CONFIG);
+    const promise = execute({
+      tasks: [
+        { id: "s", instructions: "scout", role: "scout" },
+        { id: "r", instructions: "research", role: "researcher" },
+      ],
+    });
+    await drive(host, (request) => ({
+      result: {
+        kind: "structured" as const,
+        value: {
+          status: "done",
+          summary: request.nodeId,
+          filesChanged: [],
+          evidence: [],
+          residualRisks: [],
+          sources: ["src/a.ts:12"],
+          ...(request.agent === "fusion-researcher" ? { unknowns: ["live web"] } : {}),
+        },
+      },
+    }));
+    const outcome = await promise;
+    const result = asFanout(outcome.structuredContent);
+    const byId = new Map(result.results.map((row) => [row.id, row]));
+    expect(byId.get("s")).toMatchObject({ status: "done", sources: ["src/a.ts:12"] });
+    expect(byId.get("r")).toMatchObject({
+      status: "done",
+      sources: ["src/a.ts:12"],
+      unknowns: ["live web"],
+    });
+    const text = outcome.content[0]?.type === "text" ? outcome.content[0].text : "";
+    expect(text).toContain("sources: 1");
+    expect(text).toContain("unknowns: 1");
+  });
+});

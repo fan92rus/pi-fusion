@@ -147,3 +147,48 @@ describe("violatedFields (FR-007 names the broken fields)", () => {
     ]);
   });
 });
+
+describe("violatedFields by role (design §4.8)", () => {
+  const envelope = {
+    status: "done",
+    summary: "s",
+    filesChanged: [],
+    evidence: [],
+    residualRisks: [],
+  };
+
+  it("scout requires sources", () => {
+    expect(violatedFields(envelope, "scout")).toEqual(["sources"]);
+    expect(violatedFields({ ...envelope, sources: [] }, "scout")).toEqual([]);
+  });
+
+  it("researcher requires sources and unknowns", () => {
+    expect(violatedFields(envelope, "researcher")).toEqual(["sources", "unknowns"]);
+    expect(violatedFields({ ...envelope, sources: [], unknowns: [] }, "researcher")).toEqual([]);
+  });
+
+  it("reviewer requires findings, checksRun and the pass|fail verdict", () => {
+    expect(violatedFields(envelope, "reviewer")).toEqual(["checksRun", "findings", "verdict"]);
+    expect(
+      violatedFields({ ...envelope, findings: [], checksRun: [], verdict: "pass" }, "reviewer"),
+    ).toEqual([]);
+    expect(
+      violatedFields({ ...envelope, findings: [], checksRun: [], verdict: "ok" }, "reviewer"),
+    ).toContain("verdict");
+  });
+
+  it("role-specific fields are unknown to the worker schema (strict envelope)", () => {
+    expect(violatedFields({ ...envelope, sources: [] }, "worker")).toContain("sources");
+  });
+
+  it("envelope rules hold for every role (question / no_changes)", () => {
+    const noQuestion = { ...envelope, status: "needs_orchestrator" };
+    for (const role of ["worker", "scout", "researcher", "reviewer"] as const) {
+      expect(violatedFields(noQuestion, role)).toContain("question");
+    }
+    const lying = { ...envelope, status: "no_changes", filesChanged: ["a.ts"] };
+    for (const role of ["worker", "scout", "researcher", "reviewer"] as const) {
+      expect(violatedFields(lying, role)).toContain("filesChanged");
+    }
+  });
+});

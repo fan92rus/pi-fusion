@@ -52,6 +52,7 @@ function makeTasks(count: number): ValidatedTask[] {
     id: `t${index + 1}`,
     title: `t${index + 1}`,
     instructions: `instructions for t${index + 1}`,
+    role: "worker",
   }));
 }
 

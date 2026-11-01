@@ -53,6 +53,16 @@ export function renderFanoutText(result: FanoutResult): string {
     const id = row.attempts > 1 ? `${row.id} (попытка ${row.attempts})` : row.id;
     const files = row.filesChanged.length > 0 ? row.filesChanged.join(", ") : "-";
     lines.push(`${id} · ${row.status} · ${row.summary} · ${files}`);
+    // Role report fields (design §4.8), counts + verdict — the arrays live
+    // in structuredContent; the text row stays one compact line per role
+    // field the row actually carries.
+    const roleNotes: string[] = [];
+    if (row.verdict !== undefined) roleNotes.push(`verdict: ${row.verdict}`);
+    if (row.findings !== undefined) roleNotes.push(`findings: ${row.findings.length}`);
+    if (row.checksRun !== undefined) roleNotes.push(`checksRun: ${row.checksRun.length}`);
+    if (row.sources !== undefined) roleNotes.push(`sources: ${row.sources.length}`);
+    if (row.unknowns !== undefined) roleNotes.push(`unknowns: ${row.unknowns.length}`);
+    if (roleNotes.length > 0) lines.push(`  · ${roleNotes.join(" · ")}`);
   }
   for (const clamp of result.clamps) {
     lines.push(`clamp ${clamp.field}: ${clamp.requested} → ${clamp.applied} (${clamp.reason})`);

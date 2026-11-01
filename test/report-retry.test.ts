@@ -1,9 +1,11 @@
 /**
- * FR-007 — the report retry (design rev.5.2 §4 "Report retry", TD-004):
- * a schemaFailed first attempt triggers EXACTLY ONE corrective request to
- * the SAME model — «Твой предыдущий отчёт нарушал схему: {fields}. Верни
- * ТОЛЬКО JSON-отчёт о завершённой работе по схеме. Реализацию не повторять.»
- * — while the caller holds the worker's slot.
+ * FR-007 — the report retry (design rev.5.2 §4 "Report retry", TD-004,
+ * roles §4.5): a schemaFailed first attempt triggers EXACTLY ONE corrective
+ * request to the SAME model — report-only, carrying the re-rendering
+ * context: the task's brief (the same render attempt 1 got) and, when the
+ * engine saw a value, the size-limited JSON of the rejected answer (B3).
+ * Re-implementation, new check runs and fabricated fields stay forbidden
+ * (B4). While the corrective runs, the caller holds the worker's slot.
  *
  * The retry is a NEW attempt-scoped run: nodeId <task.id>#a2 (the requestId
  * carries -a2-), so the bridge's per-attempt node identity cannot answer
@@ -39,6 +41,9 @@ import {
 } from "./fake-pi.ts";
 
 const TOOL_BLOCK = ["fusion_delegate", "subagent", "codemode"];
+
+/** The attempt-1 brief, carried into the corrective as context (§4.5.1, B3). */
+const BRIEF = "REAL BRIEF";
 
 const USAGE_A: DelegationUsage = {
   input: 1000,
@@ -114,7 +119,8 @@ async function schemaFailedFirstAttempt(
 ): Promise<SchemaFailedOutcome> {
   const promise = ctx.client.run({
     nodeId: "task-1#a1",
-    task: "REAL BRIEF",
+    task: BRIEF,
+    role: "worker",
     model: "model-a",
     timeoutMs: 60_000,
     hardToolBudget: 120,
@@ -143,6 +149,8 @@ async function retryAnsweredWith(
   const first = await schemaFailedFirstAttempt({ usage: opts.firstUsage });
   const retry = runReportRetry(ctx.client, {
     taskId: "task-1",
+    role: "worker",
+    brief: BRIEF,
     firstOutcome: first,
     model: "model-a",
     violatedFields: BAD_FIELDS,
@@ -155,21 +163,45 @@ async function retryAnsweredWith(
   return retry;
 }
 
-describe("correctiveRequest (design §Report retry wording)", () => {
-  it("names the violated fields and demands report-only output", () => {
-    expect(correctiveRequest(["filesChanged", "question"])).toBe(
-      "Твой предыдущий отчёт нарушал схему: filesChanged, question. " +
-        "Верни ТОЛЬКО JSON-отчёт о завершённой работе по схеме. Реализацию не повторять.",
-    );
+describe("correctiveRequest (design §4.5 report-only wording)", () => {
+  const base = { role: "worker" as const, brief: BRIEF };
+
+  it("names the violated fields, the brief, and demands report-only output", () => {
+    const text = correctiveRequest({
+      ...base,
+      violated: ["filesChanged", "question"],
+      rejectedJson: JSON.stringify({ filesChanged: ["a.ts"] }),
+    });
+    expect(text).toContain("нарушал ролевую схему (worker): filesChanged, question");
+    expect(text).toContain(BRIEF);
+    expect(text).toContain("Реализацию не повторять");
+    expect(text).toContain("Поля, которые контекст не подтверждает, оставь пустыми");
   });
 
-  it("degrades without a dangling colon when no field names are known", () => {
+  it("host-refused: no rejected answer exists and the corrective says so honestly", () => {
     // The host-refused path (structured_output_failed) reaches the engine
-    // without the rejected value — the retry must still happen.
-    expect(correctiveRequest([])).toBe(
-      "Твой предыдущий отчёт нарушал схему. " +
-        "Верни ТОЛЬКО JSON-отчёт о завершённой работе по схеме. Реализацию не повторять.",
-    );
+    // without the rejected value — the retry must still happen, and the
+    // child must not pretend work it never saw (review fix M4: status and
+    // summary are derived from the brief alone, never asserted).
+    const text = correctiveRequest({ ...base, violated: [] });
+    expect(text).toContain("его содержание неизвестно");
+    expect(text).not.toContain("работа уже выполнена");
+    expect(text).toContain("status и summary выводи только из брифа");
+    expect(text).toContain("предыдущий ответ недоступен");
+    expect(text).toContain("Реализацию не повторять");
+    expect(text).toContain("ОТВЕТ ПРЕДЫДУЩЕЙ ПОПЫТКИ");
+    expect(text).toContain("недоступен (хост отказал до движка");
+  });
+
+  it("rejected answer attached as JSON with the отклонён marker (B3)", () => {
+    const text = correctiveRequest({
+      ...base,
+      violated: ["question"],
+      rejectedJson: '{"status":"needs_orchestrator"}',
+    });
+    expect(text).toContain("ОТВЕТ ПРЕДЫДУЩЕЙ ПОПЫТКИ (отклонён по схеме");
+    expect(text).toContain('{"status":"needs_orchestrator"}');
+    expect(text).toContain("Реализацию не повторять");
   });
 });
 
@@ -178,6 +210,8 @@ describe("retry trigger (FR-007)", () => {
     const first = await schemaFailedFirstAttempt();
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -191,7 +225,11 @@ describe("retry trigger (FR-007)", () => {
     expect(second.nodeId).toBe("task-1#a2");
     expect(second.requestId).toMatch(/^fusion-task-1-a2-\d+-\d+$/);
     expect(second.model).toBe("model-a"); // the same model as attempt 1
-    expect(second.task).toBe(correctiveRequest(BAD_FIELDS)); // report-only brief
+    expect(second.task).toBe(
+      correctiveRequest({ role: "worker", brief: BRIEF, violated: BAD_FIELDS }),
+    );
+    // Host-refused attempt 1: no rejected value exists — the corrective says so.
+    expect(second.task).toContain("предыдущий ответ недоступен");
     expect(second.toolBudget).toEqual({ hard: 120, block: TOOL_BLOCK });
 
     ctx.pi.host.respond(second.requestId, {
@@ -208,12 +246,14 @@ describe("retry trigger (FR-007)", () => {
     });
   });
 
-  it("fields come from violatedFields() of the rejected report (completed-but-violating path)", async () => {
+  it("fields and the rejected value come from the completed-but-violating answer (B3)", async () => {
     // The client maps a completed answer whose value violates the schema onto
-    // schemaFailed too (the value is dropped there — the caller keeps it).
+    // schemaFailed too — and delivers the size-limited JSON of exactly that
+    // value (rejectedJson) so the fresh retry child can re-render honestly.
     const promise = ctx.client.run({
       nodeId: "task-1#a1",
-      task: "REAL BRIEF",
+      task: BRIEF,
+      role: "worker",
       model: "model-a",
       timeoutMs: 60_000,
       hardToolBudget: 120,
@@ -228,8 +268,11 @@ describe("retry trigger (FR-007)", () => {
     }
 
     expect(BAD_FIELDS).toEqual(["question"]); // the if/then rule, from report/validate
+    expect(outcome.rejectedJson).toBe(JSON.stringify(BAD_REPORT)); // the value the engine saw
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: outcome,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -238,13 +281,62 @@ describe("retry trigger (FR-007)", () => {
     });
     await tick();
     const second = lastRequest();
-    expect(second.task).toBe(correctiveRequest(BAD_FIELDS));
+    expect(second.task).toBe(
+      correctiveRequest({
+        role: "worker",
+        brief: BRIEF,
+        violated: BAD_FIELDS,
+        rejectedJson: outcome.rejectedJson,
+      }),
+    );
+    expect(second.task).toContain('{"status":"needs_orchestrator"');
 
     ctx.pi.host.respond(second.requestId, {
       result: { kind: "structured", value: GOOD_REPORT },
     });
     const fixed = await retry;
     expect(fixed.result.status).toBe("done");
+  });
+
+  it("role fields survive the retry: scout sources and reviewer verdict land in the row (B3)", async () => {
+    for (const [role, report, expected] of [
+      [
+        "scout",
+        { ...GOOD_REPORT, sources: ["src/a.ts:12 entry"] },
+        { sources: ["src/a.ts:12 entry"] },
+      ],
+      [
+        "reviewer",
+        { ...GOOD_REPORT, findings: ["pin drift"], checksRun: ["npm test"], verdict: "fail" },
+        { findings: ["pin drift"], checksRun: ["npm test"], verdict: "fail" },
+      ],
+    ] as const) {
+      const first = await schemaFailedFirstAttempt();
+      const retry = runReportRetry(ctx.client, {
+        taskId: "task-1",
+        role,
+        brief: BRIEF,
+        firstOutcome: first,
+        model: "model-a",
+        violatedFields: BAD_FIELDS,
+        attemptTimeoutMs: 60_000,
+        hardToolBudget: 120,
+      });
+      await tick();
+      ctx.pi.host.respond(lastRequest().requestId, {
+        result: { kind: "structured", value: report },
+      });
+      const outcome = await retry;
+      expect(outcome.result).toMatchObject({ status: "done", attempts: 2, ...expected });
+    }
+  });
+
+  it("a worker report carries no role fields into the row", async () => {
+    const outcome = await retryAnsweredWith({
+      result: { kind: "structured", value: GOOD_REPORT },
+    });
+    expect(outcome.result.sources).toBeUndefined();
+    expect(outcome.result.verdict).toBeUndefined();
   });
 });
 
@@ -254,6 +346,8 @@ describe("slot held across the retry (TD-004)", () => {
     let settled = false;
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -288,6 +382,8 @@ describe("retry timeout = min(120s, task timeoutMs)", () => {
     const first = await schemaFailedFirstAttempt();
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -308,6 +404,8 @@ describe("retry timeout = min(120s, task timeoutMs)", () => {
     const first = await schemaFailedFirstAttempt();
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -355,6 +453,8 @@ describe("attempt identity (B-3-R5)", () => {
     const first = await schemaFailedFirstAttempt();
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -411,6 +511,8 @@ describe("usage/turns aggregation (FR-010)", () => {
     const seen: number[] = [];
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -472,6 +574,8 @@ describe("every terminal shape of attempt 2 maps honestly (attempts=2)", () => {
     const first = await schemaFailedFirstAttempt();
     const retry = runReportRetry(ctx.client, {
       taskId: "task-1",
+      role: "worker",
+      brief: BRIEF,
       firstOutcome: first,
       model: "model-a",
       violatedFields: BAD_FIELDS,
@@ -512,7 +616,14 @@ describe("fanout integration (the production caller of runReportRetry)", () => {
     // seam client retained from the rejected report — NOT a hard-coded [].
     const deps: FanoutDeps = {
       contract: {
-        tasks: [{ id: "task-1", title: "task-1", instructions: "instructions for task-1" }],
+        tasks: [
+          {
+            id: "task-1",
+            title: "task-1",
+            instructions: "instructions for task-1",
+            role: "worker",
+          },
+        ],
       },
       config: {
         workers: 1,
@@ -543,7 +654,16 @@ describe("fanout integration (the production caller of runReportRetry)", () => {
     const second = lastRequest();
     expect(second.nodeId).toBe("task-1#a2");
     expect(second.model).toBe("model-a"); // the SAME model (FR-007)
-    expect(second.task).toBe(correctiveRequest(BAD_FIELDS));
+    // The brief the corrective carries is the SAME render attempt 1 got:
+    // title + instructions, no contract, no captured request.
+    expect(second.task).toBe(
+      correctiveRequest({
+        role: "worker",
+        brief: "## task-1\n\ninstructions for task-1",
+        violated: BAD_FIELDS,
+        rejectedJson: JSON.stringify(BAD_REPORT),
+      }),
+    );
 
     ctx.pi.host.respond(second.requestId, {
       result: { kind: "structured", value: GOOD_REPORT },

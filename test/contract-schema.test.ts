@@ -260,3 +260,37 @@ describe("runtime result forms", () => {
     expect(Value.Check(FanoutResultSchema, { results: [], clamps: [] })).toBe(false);
   });
 });
+
+describe("FusionTaskSchema.role (design §4.1)", () => {
+  it("accepts each exact role literal and a task without role", () => {
+    for (const role of ["worker", "scout", "researcher", "reviewer"]) {
+      expect(Value.Check(FusionTaskSchema, task({ role }))).toBe(true);
+    }
+    expect(Value.Check(FusionTaskSchema, task())).toBe(true);
+  });
+
+  it("rejects unknown or mistyped roles (case-sensitive literals)", () => {
+    for (const role of ["lead", "Worker", "SCOUT", 42, null]) {
+      expect(Value.Check(FusionTaskSchema, task({ role }))).toBe(false);
+    }
+  });
+
+  it("TaskResultSchema carries the optional role fields, nothing required", () => {
+    expect(
+      Value.Check(TaskResultSchema, {
+        id: "t1",
+        status: "done",
+        summary: "s",
+        filesChanged: [],
+        evidence: [],
+        residualRisks: [],
+        attempts: 1,
+        sources: ["src/a.ts:12"],
+        unknowns: ["network"],
+        findings: ["pin drift"],
+        checksRun: ["npm test"],
+        verdict: "fail",
+      }),
+    ).toBe(true);
+  });
+});

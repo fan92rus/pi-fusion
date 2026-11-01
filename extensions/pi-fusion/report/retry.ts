@@ -8,7 +8,9 @@
  *
  * Contract:
  * - the corrective text names the violated fields (report/validate.ts
- *   violatedFields()) and demands report-only output;
+ *   violatedFields()), carries the re-rendering context — the task's brief
+ *   and, when the engine saw a value, the size-limited JSON of the rejected
+ *   answer (§4.5.2, B3) — and demands report-only output (§4.5.4, B4);
  * - the caller holds the model slot across both runs (TD-004): the task
  *   settles only when runReportRetry resolves — the slot is never released
  *   and never re-offered to other tasks mid-retry;
@@ -22,8 +24,9 @@
  *   FR-011 rate-limit counter does not grow for it (Q-002);
  * - usage/turns sum across BOTH runs; absent usage stays unknown (FR-010).
  */
+import type { WorkerReport } from "../report/schema.ts";
 import type { FanoutSeamClient, SeamOutcome } from "../seam/client.ts";
-import type { ProgressSnapshot, TaskResult, UsageTotals } from "../types.ts";
+import type { FusionRole, ProgressSnapshot, TaskResult, UsageTotals } from "../types.ts";
 
 /** Wall-time cap of the corrective attempt (design §Report retry). */
 export const RETRY_TIMEOUT_MS = 120_000;
@@ -32,15 +35,47 @@ export const RETRY_TIMEOUT_MS = 120_000;
 export const RETRY_ATTEMPT = 2;
 
 /**
- * «Твой предыдущий отчёт нарушал схему: {fields}. Верни ТОЛЬКО JSON-отчёт о
- * завершённой работе по схеме. Реализацию не повторять.» — {fields} is
- * violatedFields() of the rejected report; empty (no dangling colon) when the
- * host refused the answer before the engine saw a value — the retry must
- * still happen.
+ * The corrective request (design §4.5.4, B4 — report-only, operator
+ * decision). The rejected answer violated the ROLE's report schema; the
+ * retry child is fresh and knows nothing, so the corrective carries the
+ * re-rendering context: the task's brief (the same render as attempt 1)
+ * and, when the engine saw a value, the size-limited JSON of the rejected
+ * answer (B3). The contract is report-only and it is stated explicitly:
+ * re-implementation, new check runs and fabricated
+ * sources/checksRun/filesChanged are forbidden — fields the passed context
+ * does not confirm stay empty, honest gaps go to residualRisks.
+ *
+ * When the host refused the answer before the engine saw a value there is
+ * no rejected answer: the corrective says so plainly («предыдущий ответ
+ * недоступен») — the child must not pretend work it never saw.
  */
-export function correctiveRequest(violated: readonly string[]): string {
-  const fields = violated.length > 0 ? `: ${violated.join(", ")}` : "";
-  return `Твой предыдущий отчёт нарушал схему${fields}. Верни ТОЛЬКО JSON-отчёт о завершённой работе по схеме. Реализацию не повторять.`;
+export function correctiveRequest(input: {
+  role: FusionRole;
+  brief: string;
+  violated: readonly string[];
+  /** Size-limited JSON of the rejected answer; absent = host-refused. */
+  rejectedJson?: string;
+}): string {
+  const fields = input.violated.length > 0 ? `: ${input.violated.join(", ")}` : "";
+  const head = input.rejectedJson
+    ? `Твой предыдущий отчёт нарушал ролевую схему (${input.role})${fields}.`
+    : // Host-refused: the previous answer never existed — its content cannot
+      // be confirmed, and the child must not depict work it never saw (§4.5.3).
+      `Твой предыдущий отчёт не дошёл до проверки схемы (${input.role})${fields}; его содержание неизвестно.`;
+  const body = input.rejectedJson
+    ? "Это корректив ОФОРМЛЕНИЯ отчёта: работа уже выполнена. Реализацию не повторять; новые прогоны проверок не запускать; источники, проверки и файлы не выдумывать. Переоформи финальный ответ ТОЛЬКО по ролевой схеме из переданного ниже контекста. Поля, которые контекст не подтверждает, оставь пустыми; невосполнимые пробелы честно зафиксируй в residualRisks."
+    : "Это корректив ОФОРМЛЕНИЯ отчёта. Реализацию не повторять; новые прогоны проверок не запускать. status и summary выводи только из брифа ниже; поля, которые бриф не подтверждает, оставь пустыми; невосполнимые пробелы честно зафиксируй в residualRisks. Источники, проверки и файлы не выдумывай.";
+  return [
+    head,
+    body,
+    "БРИФ ЗАДАЧИ (контекст того, что было сделано):",
+    "---",
+    input.brief,
+    "---",
+    "ОТВЕТ ПРЕДЫДУЩЕЙ ПОПЫТКИ (отклонён по схеме, приложен как JSON):",
+    input.rejectedJson ?? "предыдущий ответ недоступен (хост отказал до движка — значения нет)",
+    "Верни ТОЛЬКО JSON-отчёт по ролевой схеме.",
+  ].join("\n");
 }
 
 /** The FR-007 trigger: attempt 1's schemaFailed seam outcome. */
@@ -49,6 +84,17 @@ export type SchemaFailedOutcome = Extract<SeamOutcome, { kind: "schemaFailed" }>
 export interface SchemaRetryRequest {
   /** The task's id; the corrective run's nodeId is `<taskId>#a2`. */
   taskId: string;
+  /** The task's normalised role: the retry runs the SAME role's profile. */
+  role: FusionRole;
+  /**
+   * The task's brief — the same render attempt 1 received (design §4.5.1).
+   * Report-only re-rendering context, NOT a re-run: the deliberate,
+   * documented deviation from spec 001's TD-004 (that TD-004 rejects
+   * re-running the brief as RE-IMPLEMENTATION; here the brief never starts
+   * work — a fresh child without it could not re-render the report
+   * honestly, and re-implementation stays forbidden).
+   */
+  brief: string;
   /** Attempt 1's schemaFailed outcome; its terminal usage joins the sum. */
   firstOutcome: SchemaFailedOutcome;
   /** The SAME model attempt 1 ran on (FR-007) — the caller keeps its slot. */
@@ -118,10 +164,27 @@ interface RetryTelemetry {
   turnsObserved?: number;
 }
 
+/** Role report fields a report may carry; copied through when present (B3). */
+const ROLE_REPORT_FIELDS = ["sources", "unknowns", "findings", "checksRun", "verdict"] as const;
+
+/** Copies the role fields the report carried; worker reports carry none. */
+function roleFields(
+  report: WorkerReport,
+): Partial<Pick<TaskResult, (typeof ROLE_REPORT_FIELDS)[number]>> {
+  const carried = {} as Record<string, unknown>;
+  for (const field of ROLE_REPORT_FIELDS) {
+    const value = (report as Record<string, unknown>)[field];
+    if (value !== undefined) carried[field] = value;
+  }
+  return carried as Partial<Pick<TaskResult, (typeof ROLE_REPORT_FIELDS)[number]>>;
+}
+
 /**
  * The corrective run's terminal outcome → the task's final row (design §5
  * mapping at attempts = 2): the report wins, a second schema failure is the
  * terminal schema-missing mark, everything else keeps its honest cause.
+ * Role fields the report carries are copied through (§4.8, B3) — without
+ * this a successful corrective would silently drop them.
  */
 function resultFromRetryOutcome(
   id: string,
@@ -139,6 +202,7 @@ function resultFromRetryOutcome(
         evidence: [...report.evidence],
         residualRisks: [...report.residualRisks],
         ...(report.question !== undefined ? { question: report.question } : {}),
+        ...roleFields(report),
         attempts: RETRY_ATTEMPT,
         ...telemetry,
       };
@@ -211,7 +275,15 @@ export async function runReportRetry(
   let turnsObserved: number | undefined;
   const outcome = await client.run({
     nodeId: `${req.taskId}#a${RETRY_ATTEMPT}`,
-    task: correctiveRequest(req.violatedFields),
+    task: correctiveRequest({
+      role: req.role,
+      brief: req.brief,
+      violated: req.violatedFields,
+      ...(req.firstOutcome.rejectedJson !== undefined
+        ? { rejectedJson: req.firstOutcome.rejectedJson }
+        : {}),
+    }),
+    role: req.role,
     model: req.model,
     timeoutMs: Math.min(RETRY_TIMEOUT_MS, req.attemptTimeoutMs),
     hardToolBudget: req.hardToolBudget,

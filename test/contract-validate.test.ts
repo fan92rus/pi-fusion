@@ -47,7 +47,7 @@ describe("validateFusionCall: accepted call shape", () => {
   it("returns the tasks with title defaulted to the humanised id", () => {
     const value = accepted(call({ tasks: [task({ id: "fix_main-sync" })] }));
     expect(value.tasks).toEqual([
-      { id: "fix_main-sync", title: "fix main sync", instructions: "do the thing" },
+      { id: "fix_main-sync", title: "fix main sync", instructions: "do the thing", role: "worker" },
     ]);
   });
 
@@ -71,6 +71,7 @@ describe("validateFusionCall: accepted call shape", () => {
       id: "t1",
       title: "Ship HUD",
       instructions: "do the thing",
+      role: "worker",
       deliverable: "a working hud",
       files: ["js/hud.js"],
       maxSteps: 40,
@@ -85,7 +86,12 @@ describe("validateFusionCall: accepted call shape", () => {
 
   it("omits an empty files array, like any absent one", () => {
     const value = accepted(call({ tasks: [task({ files: [] })] }));
-    expect(value.tasks[0]).toEqual({ id: "t1", title: "t1", instructions: "do the thing" });
+    expect(value.tasks[0]).toEqual({
+      id: "t1",
+      title: "t1",
+      instructions: "do the thing",
+      role: "worker",
+    });
   });
 
   it("refuses a non-string title", () => {
@@ -98,7 +104,12 @@ describe("validateFusionCall: accepted call shape", () => {
   it("accepts etaSeconds without any upper bound and drops it from the output", () => {
     const value = accepted(call({ tasks: [task({ etaSeconds: 999_999 })] }));
     expect(value.tasks[0]).not.toHaveProperty("etaSeconds");
-    expect(value.tasks[0]).toEqual({ id: "t1", title: "t1", instructions: "do the thing" });
+    expect(value.tasks[0]).toEqual({
+      id: "t1",
+      title: "t1",
+      instructions: "do the thing",
+      role: "worker",
+    });
   });
 
   it("refuses an etaSeconds that is not a number", () => {
@@ -605,5 +616,33 @@ describe("renderContractBlock", () => {
       ]),
     );
     expect(block).not.toContain("- [t2] HD.Ship, ghost");
+  });
+});
+
+describe("validateFusionCall: role normalization (design §4.2)", () => {
+  it("absent role normalises to worker", () => {
+    const call = { tasks: [task()] };
+    const result = validateFusionCall(call);
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.tasks[0]?.role).toBe("worker");
+  });
+
+  it("each exact role passes through to ValidatedTask", () => {
+    for (const role of ["worker", "scout", "researcher", "reviewer"] as const) {
+      const result = validateFusionCall({ tasks: [task({ role })] });
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.value.tasks[0]?.role).toBe(role);
+    }
+  });
+
+  it("refuses an unknown role before the fan-out, naming tasks[i].role", () => {
+    for (const role of ["lead", "Worker", "helper"]) {
+      expect(refusedBy({ tasks: [task({ role })] })).toEqual({
+        reason: "role must be one of worker, scout, researcher, reviewer",
+        offender: "tasks[0].role",
+      });
+    }
   });
 });

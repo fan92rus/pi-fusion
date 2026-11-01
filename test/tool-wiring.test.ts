@@ -29,6 +29,7 @@ function makePi(initialActive: string[] = ["read", "bash"]) {
       // Host rule (docs extensions.md:277): registering a direct tool activates it.
       if (tool.exposure === "direct" && !active.includes(tool.name)) active.push(tool.name);
     },
+    registerCommand() {}, // fusionExtension now also registers /fusion
     on(event: string, handler: () => void) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
       return () => {};

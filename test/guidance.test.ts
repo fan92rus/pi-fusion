@@ -151,6 +151,7 @@ describe("registerFusionGuidance", () => {
         return () => {};
       },
       registerTool() {},
+      registerCommand() {}, // fusionExtension now also registers /fusion
       getActiveTools: () => [],
       setActiveTools() {},
       events: { on() {}, emit() {} },

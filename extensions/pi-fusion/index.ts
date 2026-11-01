@@ -1,31 +1,54 @@
 /**
  * pi-fusion extension entry point (design rev.5.2 §4 `index.ts`, §13
- * feature flag, §10 step 8): registers the `fusion_delegate` tool and wires
- * one call through validate → availability → runFanout.
+ * feature flag, §10 step 8; F02 wiring per bd pi-fusion-chq review): registers
+ * the `fusion_delegate` tool and wires one call through validate →
+ * availability → runFanout, plus the operator's `/fusion` command and the
+ * `### fusion` guidance section (F08).
  *
  * Exposure is `direct` (the model reaches it while it is active). The active
  * set is the set declared to the model, so when `fusion.enabled` is false the
- * tool is removed from it right away. The host rejects `setActiveTools()`
- * while the extension loads (its runtime is not bound yet), so the removal
- * runs on the first `session_start` — before any model request.
+ * tool is removed from it on the first `session_start` — before any model
+ * request (the host rejects `setActiveTools()` while the extension loads).
+ *
+ * Nothing caches the config for the session: the tool re-reads fusion.json on
+ * every call and the guidance section re-reads it on every run, so a
+ * `/fusion` command takes effect without a reload (review fix: the startup
+ * snapshot is never used after startup).
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { type FusionConfig, readFusionConfig } from "./config-bridge.ts";
+import { type FusionCommandDeps, registerFusionCommand } from "./commands.ts";
+import { loadFusionConfig, persistFusionConfig } from "./config.ts";
 import { FusionContractSchema } from "./contract/schema.ts";
 import { validateFusionCall } from "./contract/validate.ts";
 import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts";
 import { registerFusionGuidance } from "./guidance.ts";
-import { type DegradationRefusal, runFanout } from "./pool/fanout.ts";
+import { type DegradationRefusal, type FanoutConfig, runFanout } from "./pool/fanout.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
 import { createFanoutSeamClient } from "./seam/client.ts";
 import { type FanoutResult, FanoutResultSchema, type UsageTotals } from "./types.ts";
+import {
+  defaultWorkerAgentTargetPath,
+  FUSION_WORKER_AGENT_FILENAME,
+  installFusionWorkerAgent,
+} from "./worker-install.ts";
 
 export const FUSION_TOOL_NAME = "fusion_delegate";
+
+/** Injection points for tests; production uses the pi agent dir defaults. */
+export interface FusionExtensionOptions {
+  /** Override the fusion.json path; defaults to `~/.pi/agent/fusion.json`. */
+  configPath?: string;
+  /** Override the agents root the worker installs into; defaults to `~/.pi/agent`. */
+  agentDir?: string;
+}
 
 type ToolResult = Awaited<ReturnType<ToolDefinition["execute"]>>;
 type PiUsage = NonNullable<ToolResult["usage"]>;
@@ -66,7 +89,7 @@ function fanoutToolResult(result: FanoutResult): ToolResult {
 /** One fusion_delegate call: validate → availability → runFanout. */
 async function runFusionDelegate(
   pi: ExtensionAPI,
-  config: FusionConfig,
+  config: FanoutConfig,
   params: unknown,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
@@ -95,8 +118,18 @@ async function runFusionDelegate(
   return fanoutToolResult(outcome);
 }
 
-/** Registers the tool and applies the feature flag; config is injected for tests. */
-export function registerFusionDelegate(pi: ExtensionAPI, config: FusionConfig): void {
+/**
+ * Registers the tool and applies the feature flag (§13). `config` is a
+ * snapshot (tests) or a fresh-read getter (production): every execute
+ * re-reads, so a `/fusion` change applies to the next call without a reload.
+ * While fusion is disabled the tool is removed from the active set on the
+ * first `session_start` — before any model request.
+ */
+export function registerFusionDelegate(
+  pi: ExtensionAPI,
+  config: (FanoutConfig & { enabled: boolean }) | (() => FanoutConfig & { enabled: boolean }),
+): void {
+  const readConfig = typeof config === "function" ? config : () => config;
   pi.registerTool({
     name: FUSION_TOOL_NAME,
     label: "Fusion delegate",
@@ -106,18 +139,60 @@ export function registerFusionDelegate(pi: ExtensionAPI, config: FusionConfig): 
     outputSchema: FanoutResultSchema,
     exposure: "direct",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runFusionDelegate(pi, config, params, signal, ctx);
+      return runFusionDelegate(pi, readConfig(), params, signal, ctx);
     },
   });
-  if (!config.enabled) {
-    pi.on("session_start", () => {
+  pi.on("session_start", () => {
+    if (!readConfig().enabled) {
       pi.setActiveTools(pi.getActiveTools().filter((name) => name !== FUSION_TOOL_NAME));
-    });
-  }
+    }
+  });
 }
 
-export default function fusionExtension(pi: ExtensionAPI): void {
-  const config = readFusionConfig();
-  registerFusionDelegate(pi, config);
-  registerFusionGuidance(pi, () => config);
+/** Where the worker agent must exist for this extension's options. */
+function workerAgentTargetPath(agentDir: string | undefined): string {
+  return agentDir === undefined
+    ? defaultWorkerAgentTargetPath()
+    : join(agentDir, "agents", FUSION_WORKER_AGENT_FILENAME);
+}
+
+/**
+ * Binds the `/fusion` deps to the production modules: fresh reads and atomic
+ * persistence from config.ts, the active tool set from pi, the worker-agent
+ * check/install from worker-install.ts, notifications from the command
+ * context (bd pi-fusion-chq review fix: the command must act on the real
+ * extension runtime, not a test-only seam).
+ */
+function makeFusionCommandDeps(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  options: FusionExtensionOptions,
+): FusionCommandDeps {
+  const configPath = options.configPath;
+  const agentDir = options.agentDir;
+  return {
+    toolName: FUSION_TOOL_NAME,
+    loadConfig: () => loadFusionConfig(configPath),
+    persistConfig: (next) => persistFusionConfig(next, configPath),
+    getActiveTools: () => pi.getActiveTools(),
+    setActiveTools: (toolNames) => pi.setActiveTools(toolNames),
+    agentInstalled: () => existsSync(workerAgentTargetPath(agentDir)),
+    installAgent: () => {
+      installFusionWorkerAgent(agentDir === undefined ? {} : { agentDir });
+    },
+    notify: (message, level) => ctx.ui.notify(message, level),
+  };
+}
+
+/**
+ * Extension entry: tool + feature flag, the per-run guidance section and the
+ * `/fusion` command, all reading the same fusion.json fresh per use.
+ */
+export default function fusionExtension(
+  pi: ExtensionAPI,
+  options: FusionExtensionOptions = {},
+): void {
+  registerFusionDelegate(pi, () => loadFusionConfig(options.configPath));
+  registerFusionGuidance(pi, () => loadFusionConfig(options.configPath));
+  registerFusionCommand(pi, (ctx) => makeFusionCommandDeps(pi, ctx, options));
 }

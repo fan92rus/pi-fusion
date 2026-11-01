@@ -48,7 +48,11 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
 });
 
 /** Inclusive validation bounds; out-of-range values keep their field default. */
-const BOUNDS = {
+/**
+ * The inclusive validation bounds, shared with the `/fusion` command so the
+ * operator-facing validation cannot drift from what config.ts accepts.
+ */
+export const FUSION_CONFIG_BOUNDS = {
   workers: { min: 1, max: Number.MAX_SAFE_INTEGER },
   maxParallel: { min: 1, max: 8 },
   taskTimeoutMs: { min: 30_000, max: 3_600_000 },
@@ -142,11 +146,15 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
   const defaults = FUSION_CONFIG_DEFAULTS;
   return {
     enabled: flag("enabled", defaults.enabled),
-    workers: number("workers", BOUNDS.workers, defaults.workers),
-    maxParallel: number("maxParallel", BOUNDS.maxParallel, defaults.maxParallel),
-    taskTimeoutMs: number("taskTimeoutMs", BOUNDS.taskTimeoutMs, defaults.taskTimeoutMs),
+    workers: number("workers", FUSION_CONFIG_BOUNDS.workers, defaults.workers),
+    maxParallel: number("maxParallel", FUSION_CONFIG_BOUNDS.maxParallel, defaults.maxParallel),
+    taskTimeoutMs: number(
+      "taskTimeoutMs",
+      FUSION_CONFIG_BOUNDS.taskTimeoutMs,
+      defaults.taskTimeoutMs,
+    ),
     workerModels: list("workerModels", [...defaults.workerModels]),
-    maxSteps: number("maxSteps", BOUNDS.maxSteps, defaults.maxSteps),
+    maxSteps: number("maxSteps", FUSION_CONFIG_BOUNDS.maxSteps, defaults.maxSteps),
     requireApproval: flag("requireApproval", defaults.requireApproval),
     blockedTools: list("blockedTools", [...defaults.blockedTools]),
     leadBlockedTools: list("leadBlockedTools", [...defaults.leadBlockedTools]),

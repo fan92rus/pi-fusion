@@ -21,6 +21,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 // command persists whole snapshots, so dropping the approval/tool fields
 // would silently reset them (bd pi-fusion-chq review fix).
 import { FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
+import type { InstallWorkerAgentResult, RoleProfileStatus } from "./worker-install.ts";
 
 export interface FusionSubcommand {
   name: string;
@@ -96,6 +97,13 @@ export interface FusionCommandDeps {
   agentInstalled(): boolean;
   /** Copy the packaged worker agent into the pi agents dir (worker-install.ts). */
   installAgent(): void;
+  /**
+   * Per-profile staleness over ALL manifest entries (worker + roles — B6):
+   * absent/stale/current, so «все профили на месте» means every `current`.
+   */
+  roleProfileStatuses(): Array<{ name: string; status: RoleProfileStatus; path: string }>;
+  /** Installs every manifest profile; reports the actual outcome per profile. */
+  installRoleAgents(): Array<InstallWorkerAgentResult & { name: string }>;
   notify(message: string, level?: "info" | "warning" | "error"): void;
   /** Dialogs when a dialog-capable UI is attached; null in headless mode — `/fusion config` refuses. */
   dialogs: FusionUIDialogs | null;
@@ -203,12 +211,23 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
   const has = active.includes(deps.toolName);
   if (enabled && !has) deps.setActiveTools([...active, deps.toolName]);
   if (!enabled && has) deps.setActiveTools(active.filter((name) => name !== deps.toolName));
-  if (enabled && !deps.agentInstalled()) {
-    deps.installAgent();
-    deps.notify("fusion: on — the fusion-worker agent was missing and has been installed.");
+  if (!enabled) {
+    deps.notify("fusion: off.");
     return;
   }
-  deps.notify(`fusion: ${enabled ? "on" : "off"}.`);
+  // B6 (design §4.6): install whenever ANY manifest profile is absent or
+  // stale — an existsSync-on-the-worker-only check missed stale profiles
+  // forever — then report EVERY profile's actual outcome per design §4.6/§7
+  // (a `current` profile is listed as `current`, visible in the same notice).
+  const stale = deps.roleProfileStatuses().filter((row) => row.status !== "current");
+  const results =
+    stale.length > 0
+      ? deps.installRoleAgents()
+      : deps
+          .roleProfileStatuses()
+          .map((row) => ({ name: row.name, outcome: row.status, path: row.path }));
+  const lines = results.map((result) => `  ${result.name}: ${result.outcome} @ ${result.path}`);
+  deps.notify(`fusion: on.\n${lines.join("\n")}`);
 }
 
 function showStatus(deps: FusionCommandDeps): void {
@@ -218,11 +237,16 @@ function showStatus(deps: FusionCommandDeps): void {
     models.length > 0
       ? models.join(", ")
       : "(none — every fan-out is refused until models are set)";
-  const agent = deps.agentInstalled() ? "installed" : "missing (run /fusion on to install)";
+  const profiles = deps
+    .roleProfileStatuses()
+    .map((row) => `agent ${row.name}: ${row.status}`)
+    .join("\n");
   deps.notify(
     [
       `fusion: ${config.enabled ? "on" : "off"}`,
-      `agent fusion-worker: ${agent}`,
+      profiles,
+      `researcherWeb: ${config.researcherWeb}`,
+      `lead gate: ${config.leadBlockedTools.join(", ")}`,
       `workers: ${config.workers} (maxParallel ${config.maxParallel})`,
       `models: ${modelList}`,
       `timeout: ${config.taskTimeoutMs} ms per task`,

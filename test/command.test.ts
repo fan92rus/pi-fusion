@@ -56,6 +56,11 @@ function makeDeps(config?: Partial<FusionConfig>) {
     installAgent: () => {
       calls.push("installAgent");
     },
+    roleProfileStatuses: () => [],
+    installRoleAgents: () => {
+      calls.push("installRoleAgents");
+      return [];
+    },
     notify: (message, level = "info") => {
       notices.push({ message, level });
     },
@@ -138,24 +143,47 @@ describe("runFusionCommand: help routing", () => {
 });
 
 describe("runFusionCommand: on", () => {
-  it("persists enabled=true, activates the tool and installs a missing agent", async () => {
+  it("persists enabled=true, activates the tool and installs stale profiles per profile (B6)", async () => {
     const host = makeDeps({ enabled: false });
+    host.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
+      { name: "fusion-scout", status: "stale", path: "/a/fusion-scout.md" },
+    ];
+    host.deps.installRoleAgents = () => {
+      host.calls.push("installRoleAgents");
+      return [
+        { name: "fusion-worker", outcome: "current", path: "/a/fusion-worker.md" },
+        { name: "fusion-scout", outcome: "updated", path: "/a/fusion-scout.md" },
+      ];
+    };
     await runFusionCommand("on", host.deps);
     expect(host.config().enabled).toBe(true);
     expect(host.active()).toContain(TOOL);
-    expect(host.calls).toContain("installAgent");
+    expect(host.calls).toContain("installRoleAgents");
+    const notice = host.notices[0]?.message ?? "";
+    expect(notice).toContain("fusion: on.");
+    expect(notice).toContain("fusion-worker: current @ /a/fusion-worker.md");
+    expect(notice).toContain("fusion-scout: updated @ /a/fusion-scout.md");
     // Every other field survives the flip.
     expect(host.config()).toEqual({ ...FUSION_CONFIG_DEFAULTS, enabled: true });
     expect(host.notices[0]?.level).toBe("info");
   });
-  it("keeps the tool when already active and skips install when the agent exists", async () => {
+  it("keeps the tool when already active and skips install when every profile is current", async () => {
     const host = makeDeps({ enabled: true });
-    host.deps.agentInstalled = () => true;
+    host.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
+      { name: "fusion-scout", status: "current", path: "/a/fusion-scout.md" },
+    ];
     host.active().push(TOOL);
     await runFusionCommand("on", host.deps);
     expect(host.active()).toEqual(["read", "bash", TOOL]);
-    expect(host.calls).not.toContain("installAgent");
+    expect(host.calls).not.toContain("installRoleAgents");
     expect(host.calls).not.toContain("setActiveTools");
+    // Every profile is listed as current even when nothing installs (§4.6/§7).
+    const notice = host.notices[0]?.message ?? "";
+    expect(notice).toContain("fusion: on.");
+    expect(notice).toContain("fusion-worker: current @ /a/fusion-worker.md");
+    expect(notice).toContain("fusion-scout: current @ /a/fusion-scout.md");
   });
 });
 
@@ -298,7 +326,7 @@ describe("runFusionCommand: config", () => {
 });
 
 describe("runFusionCommand: status", () => {
-  it("reports enabled, models, width, timeout and agent presence", async () => {
+  it("reports enabled, models, width, timeout and per-profile statuses", async () => {
     const host = makeDeps({
       enabled: true,
       workers: 3,
@@ -306,7 +334,10 @@ describe("runFusionCommand: status", () => {
       taskTimeoutMs: 600_000,
       workerModels: ["m/a", "m/b"],
     });
-    host.deps.agentInstalled = () => true;
+    host.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
+      { name: "fusion-scout", status: "stale", path: "/a/fusion-scout.md" },
+    ];
     await runFusionCommand("status", host.deps);
     const status = host.notices[0]?.message ?? "";
     expect(host.notices[0]?.level).toBe("info");
@@ -315,17 +346,22 @@ describe("runFusionCommand: status", () => {
     expect(status).toContain("m/b");
     expect(status).toContain("3");
     expect(status).toContain("600000");
-    expect(status).toContain("installed");
+    expect(status).toContain("agent fusion-worker: current");
+    expect(status).toContain("agent fusion-scout: stale");
+    expect(status).toContain("researcherWeb: none");
     expect(host.persisted()).toBe(0);
   });
 
-  it("reports off, the empty rotation and a missing agent", async () => {
+  it("reports off, the empty rotation and absent profiles", async () => {
     const host = makeDeps({ enabled: false, workerModels: [] });
+    host.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "absent", path: "/a/fusion-worker.md" },
+    ];
     await runFusionCommand("status", host.deps);
     const status = host.notices[0]?.message ?? "";
     expect(status).toContain("off");
     expect(status).toContain("(none");
-    expect(status).toContain("missing");
+    expect(status).toContain("agent fusion-worker: absent");
   });
 });
 

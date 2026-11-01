@@ -30,6 +30,7 @@ describe("config-bridge readFusionConfig", () => {
       taskTimeoutMs: 600_000,
       workerModels: [],
       maxSteps: 60,
+      researcherWeb: "none",
     });
     expect(config).toEqual(FUSION_CONFIG_DEFAULTS);
   });
@@ -43,6 +44,7 @@ describe("config-bridge readFusionConfig", () => {
         taskTimeoutMs: 120_000,
         workerModels: ["model-a", "model-b"],
         maxSteps: 25,
+        researcherWeb: "both",
       }),
     );
     expect(readFusionConfig(path)).toEqual({
@@ -52,6 +54,7 @@ describe("config-bridge readFusionConfig", () => {
       taskTimeoutMs: 120_000,
       workerModels: ["model-a", "model-b"],
       maxSteps: 25,
+      researcherWeb: "both",
     });
   });
 

@@ -51,6 +51,22 @@ const L = {
   modeDescription: RU
     ? "Включение добавляет fusion_delegate в активные инструменты и при необходимости ставит воркер-агента; выключение убирает инструмент."
     : "Turning on adds fusion_delegate to the active tools and installs the worker agent if missing; turning off removes the tool.",
+  researcherWebTitle: RU ? "Состав веб-инструментов researcher" : "Researcher web composition",
+  researcherWebDescription: RU
+    ? "Ровно один профиль researcher соответствует составу; запуск с составом шире окружения честно падает preflight'ом. Дефолт none; both подтверждён live-смоуком."
+    : "Exactly one researcher profile matches the composition; a wider-than-environment launch fails the preflight honestly. Default none; both is live-smoke-verified.",
+  researcherWebNone: RU
+    ? "🌐 Researcher web: none (без веба)"
+    : "🌐 Researcher web: none (offline)",
+  researcherWebWeb: RU
+    ? "🌐 Researcher web: web (web_search + web_fetch)"
+    : "🌐 Researcher web: web (web_search + web_fetch)",
+  researcherWebCodex: RU
+    ? "🌐 Researcher web: codex (codex_search)"
+    : "🌐 Researcher web: codex (codex_search)",
+  researcherWebBoth: RU
+    ? "🌐 Researcher web: both (все три)"
+    : "🌐 Researcher web: both (all three)",
   approvalRequired: RU ? "✋ Подтверждение: требуется" : "✋ Approval: required",
   approvalOptional: RU ? "✋ Подтверждение: не требуется" : "✋ Approval: not required",
   approvalTitle: RU ? "Подтверждение делегаций" : "Delegate approval",
@@ -78,6 +94,14 @@ export const MENU_ACTIONS = {
   approvalOptional: L.approvalOptional,
 } as const;
 
+/** The researcherWeb composition options, localized; tests select by these. */
+export const RESEARCHER_WEB_OPTIONS: Record<FusionConfig["researcherWeb"], string> = {
+  none: L.researcherWebNone,
+  web: L.researcherWebWeb,
+  codex: L.researcherWebCodex,
+  both: L.researcherWebBoth,
+};
+
 // ─── Field specs ─────────────────────────────────────────────────────────────
 
 const NUMBER_KEYS = ["workers", "maxParallel", "taskTimeoutMs", "maxSteps"] as const;
@@ -86,7 +110,7 @@ type NumberKey = (typeof NUMBER_KEYS)[number];
 const LIST_KEYS = ["workerModels", "blockedTools", "leadBlockedTools"] as const;
 type ListKey = (typeof LIST_KEYS)[number];
 
-type MenuItemId = "enabled" | "approval" | NumberKey | ListKey;
+type MenuItemId = "enabled" | "approval" | "researcherWeb" | NumberKey | ListKey;
 
 export type { MenuItemId };
 
@@ -225,6 +249,10 @@ export function fusionMenuItems(config: FusionConfig): MenuItem[] {
     { id: "maxParallel", label: numberLabel(NUMBER_SPECS.maxParallel) },
     { id: "taskTimeoutMs", label: numberLabel(NUMBER_SPECS.taskTimeoutMs) },
     { id: "maxSteps", label: numberLabel(NUMBER_SPECS.maxSteps) },
+    {
+      id: "researcherWeb",
+      label: RESEARCHER_WEB_OPTIONS[config.researcherWeb],
+    },
     { id: "approval", label: config.requireApproval ? L.approvalRequired : L.approvalOptional },
     { id: "blockedTools", label: listLabel(LIST_SPECS.blockedTools) },
     { id: "leadBlockedTools", label: listLabel(LIST_SPECS.leadBlockedTools) },
@@ -256,6 +284,31 @@ async function editEnabled(
   // turnFusion persists `enabled` and moves the tool in or out of the active
   // set (installing the worker agent when needed) — the exact subcommand path.
   turnFusion(deps, enable);
+}
+
+async function editResearcherWeb(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  config: FusionConfig,
+): Promise<void> {
+  const options = RESEARCHER_WEB_OPTIONS;
+  const choice = await dialogs.select(`${L.researcherWebTitle}\n\n${L.researcherWebDescription}`, [
+    options.none,
+    options.web,
+    options.codex,
+    options.both,
+    L.back,
+  ]);
+  if (!choice || choice === L.back) return;
+  const mode = (Object.entries(options) as Array<[FusionConfig["researcherWeb"], string]>).find(
+    ([, label]) => label === choice,
+  )?.[0];
+  if (mode === undefined || mode === config.researcherWeb) {
+    deps.notify(L.noChange, "info");
+    return;
+  }
+  deps.persistConfig({ ...deps.loadConfig(), researcherWeb: mode });
+  deps.notify(`${L.researcherWebTitle} → ${options[mode]}`, "info");
 }
 
 async function editNumber(
@@ -362,6 +415,18 @@ export async function interactiveFusionConfig(
   dialogs: FusionUIDialogs,
 ): Promise<void> {
   deps.notify(`${L.title}\n\n${L.currentLabel}\n${formatCurrent(deps.loadConfig())}`, "info");
+  // B6 (design §4.6): the /fusion config path installs the manifest profiles
+  // whenever any is absent or stale, then reports EVERY profile's outcome
+  // (§4.6/§7 — `current` rows stay visible in the same notice).
+  const stale = deps.roleProfileStatuses().filter((row) => row.status !== "current");
+  const installed =
+    stale.length > 0
+      ? deps.installRoleAgents()
+      : deps
+          .roleProfileStatuses()
+          .map((row) => ({ name: row.name, outcome: row.status, path: row.path }));
+  const lines = installed.map((result) => `  ${result.name}: ${result.outcome} @ ${result.path}`);
+  deps.notify(`profiles:\n${lines.join("\n")}`, "info");
   while (true) {
     const config = deps.loadConfig();
     const items = fusionMenuItems(config);
@@ -374,6 +439,7 @@ export async function interactiveFusionConfig(
       const item = items.find((entry) => entry.label === choice);
       if (!item) continue;
       if (item.id === "enabled") await editEnabled(deps, dialogs, config);
+      else if (item.id === "researcherWeb") await editResearcherWeb(deps, dialogs, config);
       else if (item.id === "approval") await editApproval(deps, dialogs, config);
       else if (isNumberKey(item.id)) await editNumber(deps, dialogs, NUMBER_SPECS[item.id], config);
       else if (isListKey(item.id)) await editList(deps, dialogs, LIST_SPECS[item.id], config);

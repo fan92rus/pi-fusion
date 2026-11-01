@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FanoutConfig } from "./pool/fanout.ts";
+import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
 
 /** Editable operator configuration, persisted as the pi agent dir's `fusion.json`. */
 export interface FusionConfig extends FanoutConfig {
@@ -26,6 +27,14 @@ export interface FusionConfig extends FanoutConfig {
   blockedTools: string[];
   /** Tools removed from the lead session's active set while fusion is on. */
   leadBlockedTools: string[];
+  /**
+   * The researcher's web-tool composition (design §4.9.3): exactly one
+   * researcher profile matches it, so a launch never carries a list of
+   * "optional" web tool names. `none` is the only composition that can
+   * never fail a launch because of the web; verified live: `both` works in
+   * this environment (bd pi-fusion-8t2.2.5).
+   */
+  researcherWeb: ResearcherWebMode;
 }
 
 function frozenList(items: readonly string[]): string[] {
@@ -44,7 +53,10 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   maxSteps: 60,
   requireApproval: true,
   blockedTools: frozenList(["fusion_delegate", "subagent", "codemode"]),
-  leadBlockedTools: frozenList(["write", "edit", "bash"]),
+  // OQ-1 (approved 2026-11-01): powershell closes the F19 bypass on Windows;
+  // blocking a tool the host does not expose is harmless (design TD-08).
+  leadBlockedTools: frozenList(["write", "edit", "bash", "powershell"]),
+  researcherWeb: "none",
 });
 
 /** Inclusive validation bounds; out-of-range values keep their field default. */
@@ -89,6 +101,10 @@ function isStringList(value: unknown): value is string[] {
   );
 }
 
+function isResearcherWebMode(value: unknown): value is ResearcherWebMode {
+  return typeof value === "string" && (RESEARCHER_WEB_MODES as readonly string[]).includes(value);
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -105,6 +121,7 @@ function snapshot(config: FusionConfig): Readonly<FusionConfig> {
     requireApproval: config.requireApproval,
     blockedTools: frozenList(config.blockedTools),
     leadBlockedTools: frozenList(config.leadBlockedTools),
+    researcherWeb: config.researcherWeb,
   });
 }
 
@@ -143,6 +160,15 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
     }
     return [...value];
   };
+  const mode = (key: keyof FusionConfig, fallback: ResearcherWebMode): ResearcherWebMode => {
+    const value = fields[key];
+    if (value === undefined) return fallback;
+    if (!isResearcherWebMode(value)) {
+      warnField(key);
+      return fallback;
+    }
+    return value;
+  };
   const defaults = FUSION_CONFIG_DEFAULTS;
   return {
     enabled: flag("enabled", defaults.enabled),
@@ -158,6 +184,7 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
     requireApproval: flag("requireApproval", defaults.requireApproval),
     blockedTools: list("blockedTools", [...defaults.blockedTools]),
     leadBlockedTools: list("leadBlockedTools", [...defaults.leadBlockedTools]),
+    researcherWeb: mode("researcherWeb", defaults.researcherWeb),
   };
 }
 
@@ -211,6 +238,7 @@ export function persistFusionConfig(
     requireApproval: config.requireApproval,
     blockedTools: [...config.blockedTools],
     leadBlockedTools: [...config.leadBlockedTools],
+    researcherWeb: config.researcherWeb,
   };
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;

@@ -12,10 +12,16 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FanoutConfig } from "./pool/fanout.ts";
+import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
 
 export interface FusionConfig extends FanoutConfig {
   /** Feature flag (§13): the tool is declared to the model only when true. */
   enabled: boolean;
+  /**
+   * The researcher's web-tool composition (design §4.9.3): the seam picks
+   * the researcher profile variant by it. Default `none`.
+   */
+  researcherWeb: ResearcherWebMode;
 }
 
 /** Design defaults: workers 3, maxParallel 3, taskTimeoutMs 600000, maxSteps 60, no models. */
@@ -26,6 +32,7 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   taskTimeoutMs: 600_000,
   workerModels: [],
   maxSteps: 60,
+  researcherWeb: "none",
 });
 
 /** The settings file the lead operator edits: `~/.pi/agent/fusion.json`. */
@@ -61,6 +68,8 @@ export function readFusionConfig(path: string = defaultFusionConfigPath()): Read
   }
   const pick = <T>(value: unknown, accept: (v: unknown) => v is T, fallback: T): T =>
     accept(value) ? value : fallback;
+  const isResearcherWebMode = (v: unknown): v is ResearcherWebMode =>
+    typeof v === "string" && (RESEARCHER_WEB_MODES as readonly string[]).includes(v);
   const defaults = FUSION_CONFIG_DEFAULTS;
   return Object.freeze({
     enabled: pick(fields.enabled, (v): v is boolean => typeof v === "boolean", defaults.enabled),
@@ -69,5 +78,6 @@ export function readFusionConfig(path: string = defaultFusionConfigPath()): Read
     taskTimeoutMs: pick(fields.taskTimeoutMs, isPositiveInteger, defaults.taskTimeoutMs),
     workerModels: pick(fields.workerModels, isModelList, []),
     maxSteps: pick(fields.maxSteps, isPositiveInteger, defaults.maxSteps),
+    researcherWeb: pick(fields.researcherWeb, isResearcherWebMode, defaults.researcherWeb),
   });
 }

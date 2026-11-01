@@ -22,15 +22,29 @@
  * Child processes (pi-subagents runner, `PI_SUBAGENT_CHILD=1`) are workers,
  * not the lead: the gate is inert there, or the workers would be blocked too.
  */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { Value } from "@sinclair/typebox/value";
+import { isPathInsideOpenSpecTarget, isSinglePerlInvocation } from "./lead-access.ts";
 import { type FanoutResult, FanoutResultSchema, type TaskResult } from "./types.ts";
 
 /** The fan-out tool name (index.ts FUSION_TOOL_NAME; not imported, to keep this module free of index.ts). */
 const DELEGATE_TOOL = "fusion_delegate";
 
-/** Default `leadBlockedTools` (PLAN F01). */
-export const LEAD_BLOCKED_TOOLS: readonly string[] = ["write", "edit", "bash"];
+/**
+ * Default `leadBlockedTools` (PLAN F01 + OQ-1 approved 2026-11-01): the
+ * mutating tools plus `powershell` — the host declares that tool name, and
+ * blocking it closes the F19 bypass on Windows. Blocking a tool the host
+ * does not expose is harmless; the perl exception never applies to
+ * powershell (design TD-08).
+ */
+export const LEAD_BLOCKED_TOOLS: readonly string[] = ["write", "edit", "bash", "powershell"];
+
+/** The additional refusal line when a write/edit falls outside the boundary (design §5.1). */
+export const OPENSPEC_REFUSAL_NOTE =
+  "вне каталога документации OpenSpec код пишут воркеры; исключение лида ограничено целевым каталогом openspec/";
 
 /**
  * Barren fan-outs in a row before the refusal stops asking for another one.
@@ -114,10 +128,152 @@ export interface LeadRestrictionOptions {
   blockedTools?: readonly string[];
   /** False in a child worker process; defaults to "not PI_SUBAGENT_CHILD=1". */
   isLeadSession?: () => boolean;
+  /**
+   * The session root the openspec/ boundary is resolved against; defaults
+   * to the handler's `ctx.cwd` (the main session cwd). Overridable in tests.
+   */
+  projectRoot?: () => string;
+  /**
+   * The pi agent dir holding settings.json; defaults to PI_CODING_AGENT_DIR
+   * (or ~/.pi/agent) — the same resolution the config bridge uses.
+   */
+  agentDir?: () => string;
 }
 
 function isMainProcess(): boolean {
   return process.env.PI_SUBAGENT_CHILD !== "1";
+}
+
+function defaultAgentDir(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  // Expand ~ exactly like config.ts resolveAgentDir (review blocker: a
+  // literal ~ path made the settings read ENOENT, which read as "stock
+  // install" and left the perl exception ON under a custom shellPath).
+  if (configured === "~") return home;
+  if (configured !== undefined && (configured.startsWith("~/") || configured.startsWith("~\\"))) {
+    return join(home, configured.slice(2));
+  }
+  if (configured !== undefined && configured.length > 0) return configured;
+  return home.length > 0 ? join(home, ".pi", "agent") : ".pi/agent";
+}
+
+/**
+ * Whether the host bash tool runs a CUSTOM shell (design §6.1.5): any
+ * configured `shellPath` in settings.json means POSIX-quoting parity is
+ * unproven, so the perl exception is OFF — and an unreadable settings file
+ * fails closed the same way. An empty string counts as not configured
+ * (settings-manager normalizes the value only when truthy).
+ */
+/**
+ * Whether ONE settings file signals a non-default shell for the bash tool
+ * (design §6.1.5): a configured `shellPath` means POSIX-quoting parity is
+ * unproven; a configured `shellCommandPrefix` means the executed command is
+ * not the classified string — either way the perl exception is OFF. Any
+ * truthy non-string `shellPath` also counts as configured (fail-closed;
+ * the host truthy-checks the value before normalizing). A missing file is
+ * the stock install (not configured); corrupt/unreadable fails closed.
+ */
+function settingsDisablesPerlException(path: string): boolean {
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return true; // fail closed
+    const record = parsed as Record<string, unknown>;
+    const shellPath = record.shellPath;
+    const customShell =
+      shellPath === undefined || shellPath === null
+        ? false
+        : typeof shellPath === "string"
+          ? shellPath.trim().length > 0
+          : Boolean(shellPath);
+    const prefix = record.shellCommandPrefix;
+    const prefixSet =
+      prefix !== undefined &&
+      prefix !== null &&
+      (!(typeof prefix === "string") || prefix.trim().length > 0);
+    return customShell || prefixSet;
+  } catch (error) {
+    // A MISSING file is the stock install — the host's own POSIX shell, no
+    // custom shellPath. Everything else (corrupt JSON, unreadable) fails
+    // closed: the exception stays off (§6.1.5).
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    return true;
+  }
+}
+
+/**
+ * The host bash tool runs a CUSTOM shell when `shellPath` (or a
+ * `shellCommandPrefix`) is set in the MERGED settings — global
+ * (agentDir/settings.json) OR project (projectRoot/.pi/settings.json,
+ * settings-manager.js:220 deepMerge). Either file disables the perl
+ * exception (§6.1.5); in pwsh `;` separates commands, so the classified
+ * "single call" would be a lie about the executed command.
+ */
+function hostShellCustomized(agentDir: string, projectRoot: string): boolean {
+  return (
+    settingsDisablesPerlException(join(agentDir, "settings.json")) ||
+    settingsDisablesPerlException(join(projectRoot, ".pi", "settings.json"))
+  );
+}
+
+/** The exception-aware decision for one blocked tool call (design §5.1, §6.1). */
+function gateDecision(
+  toolName: string,
+  input: unknown,
+  state: LeadRestrictionState,
+  projectRoot: string,
+  agentDir: string,
+): ToolCallEventResult | undefined {
+  const block = (reason: string): ToolCallEventResult => ({ block: true, reason });
+
+  if (toolName === "write" || toolName === "edit") {
+    const path =
+      typeof input === "object" &&
+      input !== null &&
+      typeof (input as { path?: unknown }).path === "string"
+        ? (input as { path: string }).path
+        : undefined;
+    if (path === undefined) {
+      // Conservative: a call whose path we cannot read is not verifiable.
+      return block(
+        `${refusalText(toolName, state)} Причина исключения: у вызова нет пути — исключение openspec/ не применяется`,
+      );
+    }
+    const check = isPathInsideOpenSpecTarget(path, { projectRoot });
+    if (check.allowed) return undefined; // inside the realpath target of openspec/ (OQ-4)
+    const note = check.reason.includes("вне каталога") ? OPENSPEC_REFUSAL_NOTE : check.reason;
+    return block(`${refusalText(toolName, state)} Причина исключения: ${note}`);
+  }
+
+  if (toolName === "bash") {
+    const command =
+      typeof input === "object" &&
+      input !== null &&
+      typeof (input as { command?: unknown }).command === "string"
+        ? (input as { command: string }).command
+        : undefined;
+    if (command === undefined) {
+      return block(
+        `${refusalText(toolName, state)} Причина исключения: у вызова нет команды — исключение perl не применяется`,
+      );
+    }
+    const verdict = isSinglePerlInvocation(command);
+    if (!verdict.ok) {
+      return block(
+        `${refusalText(toolName, state)} Причина исключения: не одиночный вызов perl — ${verdict.reason}`,
+      );
+    }
+    if (hostShellCustomized(agentDir, projectRoot)) {
+      return block(
+        `${refusalText(toolName, state)} Причина исключения: оболочка не POSIX-совместима (задан shellPath или префикс) — исключение perl отключено`,
+      );
+    }
+    return undefined; // exactly one perl call under the host's own POSIX shell (§6.1)
+  }
+
+  // powershell and anything else on the block list: no exception applies.
+  return block(refusalText(toolName, state));
 }
 
 /** Registers the lead gate: the tool_call refusal plus the run-scoped fan-out state. */
@@ -142,9 +298,15 @@ export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrict
     }
   });
 
-  pi.on("tool_call", (event): ToolCallEventResult | undefined => {
+  pi.on("tool_call", (event, ctx): ToolCallEventResult | undefined => {
     if (!blocked.has(event.toolName)) return undefined;
     if (!options.isEnabled() || !isLeadSession()) return undefined;
-    return { block: true, reason: refusalText(event.toolName, state) };
+    return gateDecision(
+      event.toolName,
+      event.input,
+      state,
+      (options.projectRoot ?? (() => ctx?.cwd ?? process.cwd()))(),
+      (options.agentDir ?? defaultAgentDir)(),
+    );
   });
 }

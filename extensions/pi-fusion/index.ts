@@ -36,11 +36,18 @@ import { registerLeadRestrictions } from "./restrictions.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
 import { createFanoutSeamClient } from "./seam/client.ts";
-import { type FanoutResult, FanoutResultSchema, type UsageTotals } from "./types.ts";
+import {
+  type FanoutResult,
+  FanoutResultSchema,
+  type ResearcherWebMode,
+  type UsageTotals,
+} from "./types.ts";
 import {
   defaultWorkerAgentTargetPath,
   FUSION_WORKER_AGENT_FILENAME,
+  installFusionRoleAgents,
   installFusionWorkerAgent,
+  roleProfileStatuses,
 } from "./worker-install.ts";
 
 export const FUSION_TOOL_NAME = "fusion_delegate";
@@ -92,7 +99,7 @@ function fanoutToolResult(result: FanoutResult): ToolResult {
 /** One fusion_delegate call: validate → availability → runFanout. */
 async function runFusionDelegate(
   pi: ExtensionAPI,
-  config: FanoutConfig,
+  config: FanoutConfig & { researcherWeb?: ResearcherWebMode },
   params: unknown,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
@@ -112,7 +119,12 @@ async function runFusionDelegate(
     contract: validation.value,
     config,
     available: () => isSeamAvailable(pi),
-    makeClient: () => createFanoutSeamClient({ events: pi.events, cwd: ctx.cwd }),
+    makeClient: () =>
+      createFanoutSeamClient({
+        events: pi.events,
+        cwd: ctx.cwd,
+        researcherWeb: config.researcherWeb,
+      }),
     ...(abort !== undefined ? { signal: abort } : {}),
     ...(originalRequest !== undefined ? { originalRequest } : {}),
   });
@@ -225,6 +237,8 @@ function makeFusionCommandDeps(
     installAgent: () => {
       installFusionWorkerAgent(agentDir === undefined ? {} : { agentDir });
     },
+    roleProfileStatuses: () => roleProfileStatuses(agentDir === undefined ? {} : { agentDir }),
+    installRoleAgents: () => installFusionRoleAgents(agentDir === undefined ? {} : { agentDir }),
     notify: (message, level) => ctx.ui.notify(message, level),
     dialogs,
     interactiveConfig: () => {

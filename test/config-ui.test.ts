@@ -16,6 +16,7 @@ import {
   interactiveFusionConfig,
   MENU_ACTIONS,
   type MenuItemId,
+  RESEARCHER_WEB_OPTIONS,
 } from "../extensions/pi-fusion/config-ui.ts";
 
 /** Records every dependency call so a test asserts on the exact effect set. */
@@ -37,6 +38,8 @@ function makeDeps(config?: Partial<FusionConfig>) {
     },
     agentInstalled: () => false,
     installAgent: () => {},
+    roleProfileStatuses: () => [],
+    installRoleAgents: () => [],
     notify: (message, level = "info") => {
       notices.push({ message, level });
     },
@@ -203,6 +206,60 @@ describe("interactiveFusionConfig", () => {
     );
     expect(host.config().requireApproval).toBe(false);
     expect(host.persisted()).toBe(1);
+  });
+
+  it("sets researcherWeb through the composition selector", async () => {
+    const host = makeDeps();
+    const row = labelFor(host.config(), "researcherWeb");
+    await interactiveFusionConfig(
+      host.deps,
+      scriptedDialogs([row, RESEARCHER_WEB_OPTIONS.web, DONE]),
+    );
+    expect(host.config().researcherWeb).toBe("web");
+    expect(host.persisted()).toBe(1);
+  });
+
+  it("researcherWeb picker: same state persists nothing, back-out persists nothing", async () => {
+    const host = makeDeps({ researcherWeb: "web" });
+    const row = labelFor(host.config(), "researcherWeb");
+    await interactiveFusionConfig(
+      host.deps,
+      scriptedDialogs([row, RESEARCHER_WEB_OPTIONS.web, DONE]),
+    );
+    expect(host.persisted()).toBe(0);
+    const host2 = makeDeps();
+    const row2 = labelFor(host2.config(), "researcherWeb");
+    await interactiveFusionConfig(host2.deps, scriptedDialogs([row2, MENU_ACTIONS.back, DONE]));
+    expect(host2.persisted()).toBe(0);
+    expect(host2.config().researcherWeb).toBe("none");
+  });
+
+  it("installs stale profiles on open and reports each outcome (B6 on the config path)", async () => {
+    const host = makeDeps();
+    let installed = 0;
+    host.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
+      { name: "fusion-reviewer", status: "absent", path: "/a/fusion-reviewer.md" },
+    ];
+    host.deps.installRoleAgents = () => {
+      installed += 1;
+      return [{ name: "fusion-reviewer", outcome: "installed", path: "/a/fusion-reviewer.md" }];
+    };
+    await interactiveFusionConfig(host.deps, scriptedDialogs([DONE]));
+    expect(installed).toBe(1);
+    const notice = host.notices.find((entry) => entry.message.includes("profiles:"));
+    expect(notice?.message).toContain("fusion-reviewer: installed @ /a/fusion-reviewer.md");
+    // All-current opens list every profile without installing anything.
+    const host2 = makeDeps();
+    host2.deps.roleProfileStatuses = () => [
+      { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
+    ];
+    host2.deps.installRoleAgents = () => {
+      throw new Error("must not install when every profile is current");
+    };
+    await interactiveFusionConfig(host2.deps, scriptedDialogs([DONE]));
+    const notice2 = host2.notices.find((entry) => entry.message.includes("profiles:"));
+    expect(notice2?.message).toContain("fusion-worker: current @ /a/fusion-worker.md");
   });
 
   it("back out of a sub-editor persists nothing", async () => {

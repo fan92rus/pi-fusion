@@ -533,6 +533,51 @@ describe("E2E: schema-failed twice → one corrective run, then schema-missing (
   });
 });
 
+describe("E2E: researcherWeb composition selects the researcher profile (§4.9.3, wiring)", () => {
+  it("config.researcherWeb reaches the seam: web → fusion-researcher-web, default → fusion-researcher", async () => {
+    const { host, execute } = setup({ ...CONFIG, researcherWeb: "web" });
+    const promise = execute({ tasks: [{ id: "r", instructions: "research", role: "researcher" }] });
+    await drive(host, () => ({
+      result: {
+        kind: "structured" as const,
+        value: {
+          status: "done",
+          summary: "r done",
+          filesChanged: [],
+          evidence: [],
+          residualRisks: [],
+          sources: [],
+          unknowns: [],
+        },
+      },
+    }));
+    await promise;
+    expect(host.requests[0]?.agent).toBe("fusion-researcher-web");
+
+    // Default composition (none): the plain offline profile.
+    const { host: host2, execute: execute2 } = setup(CONFIG);
+    const promise2 = execute2({
+      tasks: [{ id: "r2", instructions: "research", role: "researcher" }],
+    });
+    await drive(host2, () => ({
+      result: {
+        kind: "structured" as const,
+        value: {
+          status: "done",
+          summary: "r2 done",
+          filesChanged: [],
+          evidence: [],
+          residualRisks: [],
+          sources: [],
+          unknowns: [],
+        },
+      },
+    }));
+    await promise2;
+    expect(host2.requests[0]?.agent).toBe("fusion-researcher");
+  });
+});
+
 describe("E2E: a child still running on the excluded model is accepted when it completes (FR-011)", () => {
   it("the 5th window failure lands while t11 runs on A; t11 finishes after the exclusion and is kept", async () => {
     const { host, execute } = setup({

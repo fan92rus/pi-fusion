@@ -42,6 +42,7 @@ const CUSTOM: FusionConfig = {
   requireApproval: false,
   blockedTools: ["tool-x"],
   leadBlockedTools: ["tool-y"],
+  researcherWeb: "web",
 };
 
 describe("config: fusion.json load/persist", () => {
@@ -117,7 +118,8 @@ describe("config: fusion.json load/persist", () => {
         maxSteps: 60,
         requireApproval: true,
         blockedTools: ["fusion_delegate", "subagent", "codemode"],
-        leadBlockedTools: ["write", "edit", "bash"],
+        leadBlockedTools: ["write", "edit", "bash", "powershell"],
+        researcherWeb: "none",
       });
       expect(loadFusionConfig(path)).toEqual(FUSION_CONFIG_DEFAULTS);
       expect(warn).not.toHaveBeenCalled();
@@ -252,6 +254,7 @@ describe("config: fusion.json load/persist", () => {
         "maxParallel",
         "maxSteps",
         "requireApproval",
+        "researcherWeb",
         "taskTimeoutMs",
         "workerModels",
         "workers",

@@ -73,9 +73,28 @@ describe("fusion guidance section", () => {
     expect(section).toContain("evidence");
     expect(section).toContain("needs_orchestrator");
     expect(section).toContain("files");
-    expect(section).toContain("no bash");
     expect(section).toContain("stand alone");
     expect(section).not.toContain("\n\n");
+  });
+
+  it("states the roles and when to send each (design §7)", () => {
+    const section = buildFusionSection(twoModels);
+    expect(section).toContain("`worker` (implementation — the default");
+    expect(section).toContain("`scout` (read-only code recon");
+    expect(section).toContain("`researcher` (web research per the configured `researcherWeb`");
+    expect(section).toContain("`reviewer` (adversarial check");
+    expect(section).toContain("`verdict: pass|fail`");
+    expect(section).toContain("a worker report carries no role fields");
+  });
+
+  it("states the openspec/ write-edit boundary and the single-perl bash exception (design §7)", () => {
+    const section = buildFusionSection(twoModels);
+    expect(section).toContain("realpath target of the project's `openspec/`");
+    expect(section).toContain("a verifiable boundary, not a sandbox");
+    expect(section).toContain("ONLY a single `perl` invocation");
+    expect(section).toContain("pass the perl program in single quotes");
+    expect(section).toContain("trust, not a sandbox");
+    expect(section).toContain("`powershell` is blocked by default");
   });
 
   it("states the machine facts: rotation, width ceiling and timeout", () => {

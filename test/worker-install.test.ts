@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,11 +14,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultAgentDir,
   defaultWorkerAgentTargetPath,
+  FUSION_ROLE_PROFILES,
   FUSION_WORKER_AGENT_FILENAME,
   FUSION_WORKER_AGENT_VERSION,
+  fusionCodexExtensionEntryPath,
+  fusionWebExtensionEntryPath,
+  installFusionRoleAgents,
   installFusionWorkerAgent,
   parseAgentFrontmatter,
   parseAgentVersion,
+  shippedAgentPathFor,
   shippedWorkerAgentPath,
 } from "../extensions/pi-fusion/worker-install.ts";
 
@@ -189,5 +195,185 @@ describe("shipped fusion-worker agent contract", () => {
   it("requires question exactly for needs_orchestrator and demands check output in evidence", () => {
     expect(content).toMatch(/`needs_orchestrator`[\s\S]*?`question`/);
     expect(content).toMatch(/evidence[\s\S]*?(command|exit)/i);
+  });
+});
+
+describe("worker-install FUSION_ROLE_PROFILES (design §4.6)", () => {
+  let agentDir: string;
+
+  beforeEach(() => {
+    agentDir = mkdtempSync(join(tmpdir(), "fusion-roles-"));
+  });
+
+  afterEach(() => {
+    rmSync(agentDir, { recursive: true, force: true });
+  });
+
+  it("the manifest carries exactly the seven profiles", () => {
+    expect(FUSION_ROLE_PROFILES.map((profile) => profile.name)).toEqual([
+      "fusion-worker",
+      "fusion-scout",
+      "fusion-researcher",
+      "fusion-researcher-web",
+      "fusion-researcher-codex",
+      "fusion-researcher-both",
+      "fusion-reviewer",
+    ]);
+    for (const profile of FUSION_ROLE_PROFILES) {
+      expect(profile.filename).toBe(`${profile.name}.md`);
+      expect(profile.version.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("installs all seven; each result carries the profile name", () => {
+    const results = installFusionRoleAgents({ agentDir });
+    expect(results).toHaveLength(7);
+    for (const result of results) {
+      expect(result.outcome).toBe("installed");
+      expect(result.path).toBe(join(agentDir, "agents", `${result.name}.md`));
+      expect(existsSync(result.path)).toBe(true);
+    }
+  });
+
+  it("a repeat pass reports current for every profile and rewrites nothing", () => {
+    installFusionRoleAgents({ agentDir });
+    const mtimes = new Map(
+      FUSION_ROLE_PROFILES.map((profile) => [
+        profile.name,
+        statSync(join(agentDir, "agents", profile.filename)).mtimeMs,
+      ]),
+    );
+    for (const result of installFusionRoleAgents({ agentDir })) {
+      expect(result.outcome).toBe("current");
+      expect(statSync(result.path).mtimeMs).toBe(mtimes.get(result.name));
+    }
+  });
+
+  it("updates a stale profile per entry while current ones stay untouched", () => {
+    installFusionRoleAgents({ agentDir });
+    const staleName = "fusion-scout";
+    const stalePath = join(agentDir, "agents", "fusion-scout.md");
+    const stale = readFileSync(stalePath, "utf8").replace("version: 1", "version: 0");
+    expect(stale).not.toBe(readFileSync(stalePath, "utf8"));
+    writeFileSync(stalePath, stale, "utf8");
+    const results = installFusionRoleAgents({ agentDir });
+    expect(results.find((result) => result.name === staleName)?.outcome).toBe("updated");
+    const others = results.filter((result) => result.name !== staleName);
+    for (const result of others) expect(result.outcome).toBe("current");
+    expect(readFileSync(stalePath, "utf8")).toBe(
+      readFileSync(shippedAgentPathFor("fusion-scout.md"), "utf8"),
+    );
+  });
+
+  it("substitutes the extension entry placeholders with resolved absolute paths (§4.9.4)", () => {
+    installFusionRoleAgents({ agentDir });
+    const web = readFileSync(join(agentDir, "agents", "fusion-researcher-web.md"), "utf8");
+    expect(web).toContain(fusionWebExtensionEntryPath(agentDir).replaceAll("\\", "/"));
+    expect(web).not.toContain("{{FUSION_WEB_EXTENSION_ENTRY}}");
+    const codex = readFileSync(join(agentDir, "agents", "fusion-researcher-codex.md"), "utf8");
+    expect(codex).toContain(fusionCodexExtensionEntryPath(agentDir).replaceAll("\\", "/"));
+    expect(codex).not.toContain("{{FUSION_CODEX_EXTENSION_ENTRY}}");
+    const both = readFileSync(join(agentDir, "agents", "fusion-researcher-both.md"), "utf8");
+    expect(both).toContain(", "); // both entries, comma-separated in one scalar
+    expect(both).not.toContain("{{");
+  });
+
+  it("the version line stays literal through substitution (staleness check unaffected)", () => {
+    installFusionRoleAgents({ agentDir });
+    const web = readFileSync(join(agentDir, "agents", "fusion-researcher-web.md"), "utf8");
+    expect(parseAgentVersion(web)).toBe("1");
+    const results = installFusionRoleAgents({ agentDir });
+    expect(results.find((result) => result.name === "fusion-researcher-web")?.outcome).toBe(
+      "current",
+    );
+  });
+
+  it("the plain researcher profile carries no web tool names", () => {
+    installFusionRoleAgents({ agentDir });
+    const none = readFileSync(join(agentDir, "agents", "fusion-researcher.md"), "utf8");
+    const frontmatter = parseAgentFrontmatter(none);
+    expect(frontmatter.tools?.split(",").map((tool) => tool.trim())).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(none).not.toContain("subagentOnlyExtensions");
+  });
+});
+
+describe("shipped role agent contracts (design §4.4)", () => {
+  const headerOf = (filename: string): Record<string, string> =>
+    parseAgentFrontmatter(readFileSync(shippedAgentPathFor(filename), "utf8"));
+
+  it("scout: read-only allowlist (no bash, edit, write)", () => {
+    expect(
+      headerOf("fusion-scout.md")
+        .tools?.split(",")
+        .map((tool) => tool.trim()),
+    ).toEqual(["read", "grep", "find", "ls"]);
+  });
+
+  it("researcher-web: exactly web_search and web_fetch added; delivery via subagentOnlyExtensions", () => {
+    const frontmatter = headerOf("fusion-researcher-web.md");
+    expect(frontmatter.tools?.split(",").map((tool) => tool.trim())).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "web_search",
+      "web_fetch",
+    ]);
+    expect(frontmatter.subagentOnlyExtensions).toBe("{{FUSION_WEB_EXTENSION_ENTRY}}");
+  });
+
+  it("researcher-codex: exactly codex_search added", () => {
+    const frontmatter = headerOf("fusion-researcher-codex.md");
+    expect(frontmatter.tools?.split(",").map((tool) => tool.trim())).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "codex_search",
+    ]);
+    expect(frontmatter.subagentOnlyExtensions).toBe("{{FUSION_CODEX_EXTENSION_ENTRY}}");
+  });
+
+  it("researcher-both: all three web names, both delivery entries", () => {
+    const frontmatter = headerOf("fusion-researcher-both.md");
+    expect(frontmatter.tools?.split(",").map((tool) => tool.trim())).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "web_search",
+      "web_fetch",
+      "codex_search",
+    ]);
+    expect(frontmatter.subagentOnlyExtensions).toBe(
+      "{{FUSION_WEB_EXTENSION_ENTRY}}, {{FUSION_CODEX_EXTENSION_ENTRY}}",
+    );
+  });
+
+  it("reviewer: bash allowed, edit and write not", () => {
+    expect(
+      headerOf("fusion-reviewer.md")
+        .tools?.split(",")
+        .map((tool) => tool.trim()),
+    ).toEqual(["read", "grep", "find", "ls", "bash"]);
+  });
+
+  it("every shipped profile pins fresh context, replaced prompt, no inherited skills, and a version", () => {
+    for (const profile of FUSION_ROLE_PROFILES) {
+      const frontmatter = headerOf(profile.filename);
+      expect(frontmatter.systemPromptMode).toBe("replace");
+      expect(frontmatter.inheritProjectContext).toBe("true");
+      expect(frontmatter.inheritSkills).toBe("false");
+      expect(frontmatter.defaultContext).toBe("fresh");
+      expect(frontmatter.version).toBe(profile.version);
+      expect(frontmatter.model).toBeUndefined();
+      expect(frontmatter.thinking).toBeUndefined();
+      expect(frontmatter.allowNestedSubagents).toBeUndefined();
+    }
   });
 });

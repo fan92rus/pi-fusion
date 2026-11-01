@@ -1,8 +1,10 @@
 # Design: fusion-roles-and-lead-access (002)
 
-> Status: Draft (rev.3, 2026-11-01: OQ-1/OQ-4 утверждены; обновлены блок
+> Status: Approved — готово к реализации (2026-11-01, после 5 раундов ревью,
+> финальный ГОДЕН). Реализация — в fusion-режиме, этап bd pi-fusion-8t2.2
+> (старт — по решению владельца). Ревизия rev.3: OQ-1/OQ-4 утверждены; обновлены блок
 > powershell и граница realpath `openspec/`; закрыты F1/F2 и находки ревью
-> 8t2.1.3–13, 16; researcher preflight остаётся fail-fast. Детали — ниже.)
+> 8t2.1.3–16; researcher preflight остаётся fail-fast. Детали — ниже.)
 > Требования: [requirements.md](requirements.md) (Approved; уточнение rev.3 —
 > см. шапку требований).
 > Модель изменений: точечные расширения существующих модулей `extensions/pi-fusion/`;

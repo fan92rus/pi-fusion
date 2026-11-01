@@ -23,7 +23,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { FOLLOW_UP_MAX_CHARS } from "./briefs.ts";
+import { FOLLOW_UP_MAX_CHARS, ORIGINAL_REQUEST_CHAR_BUDGET } from "./briefs.ts";
 import { type FusionCommandDeps, registerFusionCommand } from "./commands.ts";
 import { loadFusionConfig, persistFusionConfig } from "./config.ts";
 import { interactiveFusionConfig } from "./config-ui.ts";
@@ -140,16 +140,28 @@ export function registerFusionDelegate(
   // context, because a brief is a summary and thin summaries lose the job.
   // A user message shorter than FOLLOW_UP_MAX_CHARS («continue», «fix the
   // failing test») is a follow-up: it merges with the previous request
-  // instead of replacing it — quoted alone it IS the thin brief. An empty
-  // prompt (an image-only run) keeps the previous request; a non-user run
-  // (steer, custom) never touches it.
+  // instead of replacing it — quoted alone it IS the thin brief. When the
+  // accumulation outgrows ORIGINAL_REQUEST_CHAR_BUDGET, the stale head is
+  // clipped and the follow-up stays whole at the end: the newest instruction
+  // is exactly what a worker must not miss. An empty prompt (an image-only
+  // run) keeps the previous request; a non-user run (steer, custom) never
+  // touches it; a new session starts clean.
   let originalRequest: string | undefined;
   pi.on("before_agent_start", (event) => {
     if (event.messageType !== "user") return;
     const text = event.prompt.trim();
     if (text.length === 0) return;
     if (text.length < FOLLOW_UP_MAX_CHARS && originalRequest !== undefined) {
-      originalRequest = `${originalRequest}\n\n--- follow-up ---\n${text}`;
+      const merged = `${originalRequest}\n\n--- follow-up ---\n${text}`;
+      const overflow = merged.length - ORIGINAL_REQUEST_CHAR_BUDGET;
+      if (overflow > 0) {
+        const cut = merged.slice(overflow);
+        // A head cut can split a surrogate pair; drop the orphaned half.
+        const first = cut.charCodeAt(0);
+        originalRequest = first >= 0xdc00 && first <= 0xdfff ? cut.slice(1) : cut;
+      } else {
+        originalRequest = merged;
+      }
     } else {
       originalRequest = event.prompt;
     }
@@ -166,7 +178,10 @@ export function registerFusionDelegate(
       return runFusionDelegate(pi, readConfig(), params, signal, ctx, originalRequest);
     },
   });
-  pi.on("session_start", () => {
+  pi.on("session_start", (event) => {
+    // A new session must not quote the previous session's request; a reload
+    // re-reads the same session, so the captured request stays valid.
+    if (event?.reason !== "reload") originalRequest = undefined;
     if (!readConfig().enabled) {
       pi.setActiveTools(pi.getActiveTools().filter((name) => name !== FUSION_TOOL_NAME));
     }

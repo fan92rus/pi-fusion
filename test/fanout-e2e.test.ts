@@ -286,6 +286,79 @@ describe("E2E: original request quoted into briefs", () => {
     expect(briefs[0]).not.toContain("First job text");
   });
 
+  it("an overflowed merge keeps the follow-up and clips the stale head", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "S".repeat(16_050) });
+    fire("before_agent_start", { messageType: "user", prompt: "fix the failing test NOW" });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    // The freshest instruction must survive whole, at the end; the clipped
+    // body fits the budget. The body ends at the prelude separator (the
+    // internal "--- follow-up ---" marker must not cut the extraction).
+    expect(briefs[0]).toContain("fix the failing test NOW");
+    const brief = briefs[0] ?? "";
+    const blockStart = brief.indexOf("---\n") + 4;
+    const blockEnd = brief.indexOf("\n\n---\n\n## ", blockStart);
+    const body = (brief.slice(blockStart, blockEnd) ?? "").replace(/\n---$/, "");
+    expect(body.length).toBeLessThanOrEqual(16_000);
+    expect(body.endsWith("fix the failing test NOW")).toBe(true);
+  });
+
+  it("a new session resets the captured request", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "Old session spec text" });
+    fire("session_start", { reason: "new" });
+    fire("before_agent_start", { messageType: "user", prompt: "continue" });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).not.toContain("Old session spec text");
+    expect(briefs[0]).toContain("continue");
+  });
+
+  it("an exactly-280-char message replaces the request; 279 merges", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    const a280 = "A".repeat(280);
+    const b280 = "B".repeat(280);
+    fire("before_agent_start", { messageType: "user", prompt: a280 });
+    fire("before_agent_start", { messageType: "user", prompt: b280 });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain(b280);
+    expect(briefs[0]).not.toContain(a280);
+  });
+
+  it("a 279-char message after a request merges as a follow-up", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    const a280 = "A".repeat(280);
+    const c279 = "C".repeat(279);
+    fire("before_agent_start", { messageType: "user", prompt: a280 });
+    fire("before_agent_start", { messageType: "user", prompt: c279 });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain(a280);
+    expect(briefs[0]).toContain(c279);
+  });
+
   it("a run without a captured user prompt leaves the brief exactly the task text", async () => {
     const { host, execute } = setup(CONFIG);
     const briefs: string[] = [];

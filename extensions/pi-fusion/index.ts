@@ -18,6 +18,7 @@ import { type FusionConfig, readFusionConfig } from "./config-bridge.ts";
 import { FusionContractSchema } from "./contract/schema.ts";
 import { validateFusionCall } from "./contract/validate.ts";
 import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts";
+import { registerFusionGuidance } from "./guidance.ts";
 import { type DegradationRefusal, runFanout } from "./pool/fanout.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
@@ -116,5 +117,7 @@ export function registerFusionDelegate(pi: ExtensionAPI, config: FusionConfig): 
 }
 
 export default function fusionExtension(pi: ExtensionAPI): void {
-  registerFusionDelegate(pi, readFusionConfig());
+  const config = readFusionConfig();
+  registerFusionDelegate(pi, config);
+  registerFusionGuidance(pi, () => config);
 }

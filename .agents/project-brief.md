@@ -7,8 +7,9 @@ Updated: 2026-11-01 (проверил: оркестратор goal-кампан�
 Расширение pi coding agent «Fusion-режим»: лид (фронтир-модель главной сессии) получает
 один тул `fusion_delegate` и делит работу на независимые задачи; пул дешёвых fresh-воркеров
 (агент `fusion-worker`, delegation-шов pi-subagents) исполняет их параллельно и возвращает
-структурные отчёты. Источник истины по требованиям/дизайну: `.ai/sdd/specs/001-fanout-engine/`
-(requirements.md + design.md rev.5.2) и `.ai/sdd/PLAN.md`.
+структурные отчёты. Источник истины по требованиям/дизайну: `openspec/changes/archive/2026-11-01-legacy-sdd-import/specs/001-fanout-engine/`
+(requirements.md + design.md rev.5.2, спека реализована в коде) и там же `PLAN.md`;
+активный черновик — `openspec/changes/fusion-roles-and-lead-access/`.
 
 ## Commands (все из корня репо, Windows/MSYS bash)
 
@@ -37,6 +38,6 @@ Updated: 2026-11-01 (проверил: оркестратор goal-кампан�
 
 ## Do not touch
 
-- `.ai/sdd/**` — утверждённая спека; правки только по явной задаче.
+- `openspec/**` — спеки/изменения OpenSpec; правки только по явной задаче или план-циклу (ревью до ГОДЕН).
 - `.beads/issues.jsonl` — bd трекер, пишет только оркестратор.
 - Чужие незакоммиченные файлы в рабочем дереве.

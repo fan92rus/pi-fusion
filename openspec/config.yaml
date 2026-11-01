@@ -1,0 +1,36 @@
+schema: spec-driven
+
+context: |
+  Language: ru
+  All artifacts must be written in ru.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Проект — pi-fusion, расширение для pi coding agent (TypeScript, extensions/pi-fusion/).
+  Задачи — в bd (beads); воркеры не трогают git и bd.
+  Ревью всегда свежим субагентом на другой модели, чем автор (план-цикл plan-loop:
+  владелец утверждает план/требования/дизайн явно, спека замораживается до реализации).
+  Исторические SDD-документы (план F01–F20, спека 001 fanout-engine, идея 001) —
+  дословно в changes/archive/2026-11-01-legacy-sdd-import/; спека 001 реализована в коде.
+  Активный черновик ролей и доступа лида — changes/fusion-roles-and-lead-access/
+  (ревью не пройдено, решения OQ-1/OQ-4 не утверждены).
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

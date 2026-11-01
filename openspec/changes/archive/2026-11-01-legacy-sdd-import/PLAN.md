@@ -4,6 +4,10 @@
 > Source: сессия анализа atomic-agent Fusion + ресёрч pi-экосистемы; @[.ai/sdd/ideas/001-fusion-mode-for-pi.md]
 > Last Updated: 2026-10-31
 
+## Согласованная дельта: роли агентов и документы лида
+
+Оператор согласовал отдельные роли worker/scout/researcher/reviewer и исключения лида для `.ai/` и доверительного вызова Perl. Эти изменения уточняют F03/F04/F08/F19: вне исключений действуют прежние ограничения. Произвольный Perl не является песочницей. Подробности и стадия согласования — в `specs/002-fusion-roles-and-lead-access/`.
+
 ## Vision
 
 **pi-fusion** — расширение для pi coding agent, воспроизводящее Fusion-режим atomic-agent

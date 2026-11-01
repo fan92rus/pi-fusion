@@ -10,7 +10,6 @@
  * runs on the first `session_start` — before any model request.
  */
 import type {
-  EventBus,
   ExtensionAPI,
   ExtensionContext,
   ToolDefinition,
@@ -22,12 +21,7 @@ import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts
 import { type DegradationRefusal, runFanout } from "./pool/fanout.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
-import {
-  createFanoutSeamClient,
-  SEAM_CANCEL_EVENT,
-  SEAM_REQUEST_EVENT,
-  SEAM_RESPONSE_EVENT,
-} from "./seam/client.ts";
+import { createFanoutSeamClient } from "./seam/client.ts";
 import { type FanoutResult, FanoutResultSchema, type UsageTotals } from "./types.ts";
 
 export const FUSION_TOOL_NAME = "fusion_delegate";
@@ -55,71 +49,6 @@ export function toPiUsage(usage: UsageTotals): PiUsage {
   };
 }
 
-interface SeamRequestRef {
-  requestId: string;
-  ownerRunId: string;
-  nodeId: string;
-}
-
-/**
- * Esc compensation (supervisor decision, pi-fusion-hi7): the seam client keeps
- * its requestIds private and dispose() does not send :cancel, so the tool
- * watches the shared bus itself. Requests seen but not yet answered (or timed
- * out / cancelled) are the in-flight set; `cancelAll()` sends :cancel for each
- * before runFanout's dispose(). Canonical fix: client.cancelAllPending() plus
- * pool onAbort — tracked as a separate bd task.
- */
-function trackInFlight(events: EventBus) {
-  const pending = new Map<string, SeamRequestRef>();
-  const settled = new Set<string>();
-  const requestIdOf = (data: unknown): string | undefined =>
-    typeof (data as { requestId?: unknown } | null)?.requestId === "string"
-      ? (data as { requestId: string }).requestId
-      : undefined;
-  const offs = [
-    events.on(SEAM_REQUEST_EVENT, (data) => {
-      const ref = data as SeamRequestRef;
-      // A synchronous answer may already have settled this request.
-      if (!settled.has(ref.requestId)) {
-        pending.set(ref.requestId, {
-          requestId: ref.requestId,
-          ownerRunId: ref.ownerRunId,
-          nodeId: ref.nodeId,
-        });
-      }
-    }),
-    events.on(SEAM_RESPONSE_EVENT, (data) => {
-      const id = requestIdOf(data);
-      if (id !== undefined) {
-        pending.delete(id);
-        settled.add(id);
-      }
-    }),
-    events.on(SEAM_CANCEL_EVENT, (data) => {
-      const id = requestIdOf(data);
-      if (id !== undefined) pending.delete(id);
-    }),
-  ];
-  return {
-    cancelAll(): void {
-      const inFlight = [...pending.values()];
-      pending.clear();
-      for (const ref of inFlight) {
-        events.emit(SEAM_CANCEL_EVENT, {
-          requestId: ref.requestId,
-          ownerRunId: ref.ownerRunId,
-          nodeId: ref.nodeId,
-        });
-      }
-    },
-    dispose(): void {
-      for (const off of offs) off();
-      pending.clear();
-      settled.clear();
-    },
-  };
-}
-
 function refusal(text: string): ToolResult {
   return { content: [{ type: "text", text }], details: undefined, isError: true };
 }
@@ -133,7 +62,7 @@ function fanoutToolResult(result: FanoutResult): ToolResult {
   };
 }
 
-/** One fusion_delegate call: validate → availability → runFanout, Esc-aware. */
+/** One fusion_delegate call: validate → availability → runFanout. */
 async function runFusionDelegate(
   pi: ExtensionAPI,
   config: FusionConfig,
@@ -147,30 +76,22 @@ async function runFusionDelegate(
       `fusion_delegate refused: ${validation.error.reason} (offender: ${validation.error.offender})`,
     );
   }
+  // Esc (design §8) is handled inside the pool: runFanout's abort listener
+  // sends :cancel to every in-flight child through the seam client
+  // (cancelAllPending), then disposes it — pending runs resolve cancelled.
   const abort = signal ?? ctx.signal;
-  // Without a seam bus there is nothing to track; runFanout refuses the call.
-  const inFlight = isSeamAvailable(pi) ? trackInFlight(pi.events) : undefined;
-  // Registered before runFanout's own abort listener, so :cancel goes out first.
-  // An already-aborted signal needs no listener: runFanout drains it itself.
-  const onAbort = (): void => inFlight?.cancelAll();
-  abort?.addEventListener("abort", onAbort, { once: true });
-  try {
-    const outcome: FanoutResult | DegradationRefusal = await runFanout({
-      contract: validation.value,
-      config,
-      available: () => isSeamAvailable(pi),
-      makeClient: () => createFanoutSeamClient({ events: pi.events, cwd: ctx.cwd }),
-      ...(abort !== undefined ? { signal: abort } : {}),
-    });
-    if (isDegradationRefusal(outcome)) {
-      // FR-009: the whole call is refused before any worker starts.
-      return refusal(renderDegradationRefusal(outcome));
-    }
-    return fanoutToolResult(outcome);
-  } finally {
-    abort?.removeEventListener("abort", onAbort);
-    inFlight?.dispose();
+  const outcome: FanoutResult | DegradationRefusal = await runFanout({
+    contract: validation.value,
+    config,
+    available: () => isSeamAvailable(pi),
+    makeClient: () => createFanoutSeamClient({ events: pi.events, cwd: ctx.cwd }),
+    ...(abort !== undefined ? { signal: abort } : {}),
+  });
+  if (isDegradationRefusal(outcome)) {
+    // FR-009: the whole call is refused before any worker starts.
+    return refusal(renderDegradationRefusal(outcome));
   }
+  return fanoutToolResult(outcome);
 }
 
 /** Registers the tool and applies the feature flag; config is injected for tests. */

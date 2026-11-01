@@ -74,7 +74,7 @@ export interface FanoutDeps {
   /** FR-009 pre-flight; false refuses the whole call before any launch. */
   available: () => boolean;
   makeClient: () => FanoutSeamClient;
-  /** Esc: abort → queued tasks cancel, in-flight children dispose. */
+  /** Esc (§8): abort → :cancel to every in-flight child, queued tasks cancel. */
   signal?: AbortSignal;
 }
 
@@ -441,8 +441,11 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
       return;
     }
     aborted = true;
-    // Queued tasks can never launch now; in-flight children are disposed and
-    // resolve as cancelled (F12: interrupted, not failed).
+    // Esc (design §8): stop the in-flight children first — one :cancel each —
+    // then dispose() resolves whatever is left as cancelled (F12: interrupted,
+    // not failed).
+    client.cancelAllPending();
+    // Queued tasks can never launch now.
     drainQueue((task) => cancelledTask(task.id, 0, "cancelled before launch"));
     client.dispose();
   };

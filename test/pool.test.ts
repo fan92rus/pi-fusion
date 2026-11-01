@@ -510,6 +510,51 @@ describe("abort signal (design §8 Esc row)", () => {
     expect(result.results.slice(0, 4).map((row) => row.attempts)).toStrictEqual([1, 1, 1, 1]);
     expect(result.results.slice(4).map((row) => row.attempts)).toStrictEqual([0, 0]);
   });
+
+  it("Esc mid-run: exactly one :cancel with the full body per in-flight child; completed results are kept", async () => {
+    const tasks = ["t1", "t2", "t3", "t4", "t5", "t6"].map((id) => makeTask(id));
+    const controller = new AbortController();
+    const { pi, promise } = startPool(makeCall(tasks), BASE_CONFIG, {
+      signal: controller.signal,
+    });
+    expect(pi.host.requests).toHaveLength(4);
+    // t1 finishes naturally; its released slot launches t5 (FIFO).
+    respondByNode(pi, "t1#a1");
+    await tick();
+    expect(pi.host.requests).toHaveLength(5);
+    const inFlightAtAbort = pi.host.pendingRequestIds().sort();
+    expect(inFlightAtAbort).toHaveLength(4);
+
+    controller.abort();
+    await tick();
+    const result = expectResult(await promise);
+
+    // Exactly one :cancel per in-flight child, never for the finished t1.
+    expect(pi.host.cancels.map((cancel) => cancel.requestId).sort()).toStrictEqual(inFlightAtAbort);
+    for (const cancel of pi.host.cancels) {
+      const request = pi.host.requests.find((r) => r.requestId === cancel.requestId);
+      expect(cancel).toStrictEqual({
+        requestId: request?.requestId,
+        ownerRunId: expect.stringMatching(/^fusion-/),
+        nodeId: request?.nodeId,
+      });
+      expect(pi.host.cancelsFor(cancel.requestId)).toHaveLength(1);
+    }
+
+    expect(result.results.map((row) => row.id)).toStrictEqual(["t1", "t2", "t3", "t4", "t5", "t6"]);
+    expect(result.results[0]).toMatchObject({
+      status: "done",
+      summary: "fake-pi structured result",
+    });
+    expect(result.results.slice(1, 5).map((row) => row.status)).toStrictEqual([
+      "cancelled",
+      "cancelled",
+      "cancelled",
+      "cancelled",
+    ]);
+    expect(result.results.slice(1, 5).map((row) => row.attempts)).toStrictEqual([1, 1, 1, 1]);
+    expect(result.results[5]).toMatchObject({ status: "cancelled", attempts: 0 });
+  });
 });
 
 describe("empty rotation (B-FINAL, FR-003)", () => {

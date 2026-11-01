@@ -127,6 +127,13 @@ export interface FanoutSeamClient {
   run(req: SeamRunRequest): Promise<SeamOutcome>;
   /** Sends :cancel {requestId, ownerRunId, nodeId} for an in-flight request. */
   cancel(requestId: string): void;
+  /**
+   * Sends :cancel {requestId, ownerRunId, nodeId} for every pending request
+   * and then resolves each as {kind:"cancelled"} (design §8 Esc row). Pending
+   * entries are dropped BEFORE the emits, so neither a second sweep nor the
+   * single-request cancel() can ever emit twice for the same requestId.
+   */
+  cancelAllPending(): void;
   /** Unsubscribes and resolves every pending run as {kind:"cancelled"}. */
   dispose(): void;
 }
@@ -333,6 +340,21 @@ export function createFanoutSeamClient(options: FanoutSeamClientOptions): Fanout
     cancel(requestId) {
       const entry = pending.get(requestId);
       if (entry !== undefined) emitCancel(entry);
+    },
+
+    cancelAllPending() {
+      const entries = [...pending.values()];
+      if (entries.length === 0) return;
+      // Drop the whole pending set BEFORE emitting: from this moment every
+      // sweep/cancel/response finds an empty map — one :cancel per requestId,
+      // ever. The grace timers die with the entries, so no timeout :cancel
+      // can follow the sweep.
+      pending.clear();
+      for (const entry of entries) {
+        clearTimeout(entry.timer);
+        emitCancel(entry);
+        entry.resolve({ kind: "cancelled" });
+      }
     },
 
     dispose() {

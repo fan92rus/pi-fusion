@@ -536,6 +536,69 @@ describe("cancel(requestId)", () => {
   });
 });
 
+describe("cancelAllPending()", () => {
+  it("emits exactly one :cancel per pending run with the full body and resolves each as cancelled", async () => {
+    const first = runTask({ nodeId: "task-1#a1" });
+    const second = runTask({ nodeId: "task-2#a1" });
+    ctx.client.cancelAllPending();
+    expect(ctx.pi.host.cancels).toHaveLength(2);
+    for (const cancel of ctx.pi.host.cancels) {
+      const request = ctx.pi.host.requests.find((r) => r.requestId === cancel.requestId);
+      expect(cancel).toStrictEqual({
+        requestId: request?.requestId,
+        ownerRunId: request?.ownerRunId,
+        nodeId: request?.nodeId,
+      });
+    }
+    expect(await first).toStrictEqual({ kind: "cancelled" });
+    expect(await second).toStrictEqual({ kind: "cancelled" });
+  });
+
+  it("finished runs keep their results; only the still-pending run is cancelled", async () => {
+    const finished = runTask({ nodeId: "task-1#a1" });
+    const settled = lastRequest();
+    ctx.pi.host.respond(settled.requestId, {
+      result: { kind: "structured", value: VALID_REPORT },
+      usage: USAGE,
+    });
+    expect(await finished).toMatchObject({ kind: "report", report: { status: "done" } });
+    const pending = runTask({ nodeId: "task-2#a1" });
+    ctx.client.cancelAllPending();
+    expect(ctx.pi.host.cancels).toHaveLength(1);
+    expect(ctx.pi.host.cancels[0]?.requestId).not.toBe(settled.requestId);
+    expect(await pending).toStrictEqual({ kind: "cancelled" });
+  });
+
+  it("double-cancel is impossible: pending is dropped before the emits, late answers are ignored", async () => {
+    const promise = runTask();
+    const request = lastRequest();
+    ctx.client.cancelAllPending();
+    expect(await promise).toStrictEqual({ kind: "cancelled" });
+    expect(ctx.pi.host.cancels).toHaveLength(1);
+    // A second sweep, the single-request cancel and a late terminal answer
+    // all find no pending entry left — no second :cancel goes out.
+    ctx.client.cancelAllPending();
+    ctx.client.cancel(request.requestId);
+    ctx.pi.host.respondRaw({
+      requestId: request.requestId,
+      ownerRunId: request.ownerRunId,
+      nodeId: request.nodeId,
+      status: "completed",
+      result: { kind: "structured", value: VALID_REPORT },
+    });
+    expect(ctx.pi.host.cancels).toHaveLength(1);
+  });
+
+  it("cancels the local grace timer: no timeout :cancel after the sweep", async () => {
+    vi.useFakeTimers();
+    const promise = runTask({ timeoutMs: 1_000 });
+    ctx.client.cancelAllPending();
+    expect(await promise).toStrictEqual({ kind: "cancelled" });
+    await vi.advanceTimersByTimeAsync(1_000 + SEAM_GRACE_MS + 1);
+    expect(ctx.pi.host.cancels).toHaveLength(1);
+  });
+});
+
 describe("dispose()", () => {
   it("resolves every pending run as cancelled without usage", async () => {
     const first = runTask({ nodeId: "task-1#a1" });

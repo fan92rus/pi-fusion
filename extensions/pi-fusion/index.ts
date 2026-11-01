@@ -25,6 +25,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { type FusionCommandDeps, registerFusionCommand } from "./commands.ts";
 import { loadFusionConfig, persistFusionConfig } from "./config.ts";
+import { interactiveFusionConfig } from "./config-ui.ts";
 import { FusionContractSchema } from "./contract/schema.ts";
 import { validateFusionCall } from "./contract/validate.ts";
 import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts";
@@ -171,7 +172,10 @@ function makeFusionCommandDeps(
 ): FusionCommandDeps {
   const configPath = options.configPath;
   const agentDir = options.agentDir;
-  return {
+  // ctx.ui is a structural superset of FusionUIDialogs; null when the run
+  // mode has no dialog-capable UI (headless — /fusion config refuses).
+  const dialogs = ctx.hasUI ? ctx.ui : null;
+  const deps: FusionCommandDeps = {
     toolName: FUSION_TOOL_NAME,
     loadConfig: () => loadFusionConfig(configPath),
     persistConfig: (next) => persistFusionConfig(next, configPath),
@@ -182,7 +186,13 @@ function makeFusionCommandDeps(
       installFusionWorkerAgent(agentDir === undefined ? {} : { agentDir });
     },
     notify: (message, level) => ctx.ui.notify(message, level),
+    dialogs,
+    interactiveConfig: () => {
+      if (!dialogs) return Promise.resolve();
+      return interactiveFusionConfig(deps, dialogs);
+    },
   };
+  return deps;
 }
 
 /**

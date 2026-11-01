@@ -1,0 +1,388 @@
+/**
+ * config-ui.ts — interactive TUI configuration for fusion mode (`/fusion
+ * config`), modeled on pi-autoresearch's `parallel/config-ui.ts` menu: a
+ * select loop whose title always re-renders the current fusion.json values,
+ * so the operator sees what they are about to change and what changed after
+ * every edit. Numbers are validated against the same FUSION_CONFIG_BOUNDS
+ * config.ts enforces on load, lists parse with the same rule as
+ * `/fusion model`, and the on/off flip reuses the command's turnFusion, so
+ * the menu cannot drift from the subcommands.
+ *
+ * Localized: auto-detects Russian locale (ru-RU) and shows Russian UI.
+ */
+
+import {
+  type FusionCommandDeps,
+  type FusionUIDialogs,
+  parsePositiveInt,
+  turnFusion,
+} from "./commands.ts";
+import { FUSION_CONFIG_BOUNDS, FUSION_CONFIG_DEFAULTS, type FusionConfig } from "./config.ts";
+
+// ─── i18n ────────────────────────────────────────────────────────────────────
+
+function detectRu(): boolean {
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale || "";
+  return locale.toLowerCase().startsWith("ru");
+}
+
+const RU = detectRu();
+
+const L = {
+  title: RU ? "Конфигурация fusion (fusion.json)" : "Fusion configuration (fusion.json)",
+  currentLabel: RU ? "Текущие:" : "Current:",
+  done: RU ? "✅ Готово" : "✅ Done",
+  back: RU ? "↩️ Назад" : "↩️ Back",
+  noChange: RU ? "Без изменений" : "No change",
+  saved: RU ? "Конфиг сохранён." : "Config saved.",
+  errorPrefix: RU ? "Ошибка: " : "Error: ",
+  range: RU ? "Диапазон" : "Range",
+  defaultLabel: RU ? "Дефолт" : "Default",
+  current: RU ? "текущий" : "current",
+  enterValue: RU
+    ? "Введите новое значение (пусто — отмена):"
+    : "Enter a new value (blank = cancel):",
+  invalid: RU ? "Неверное значение" : "Invalid value",
+  turnOn: RU ? "✅ Включить" : "✅ Turn on",
+  turnOff: RU ? "⬛ Выключить" : "⬛ Turn off",
+  modeOn: RU ? "⚡ Режим fusion: включён" : "⚡ Fusion mode: on",
+  modeOff: RU ? "⚡ Режим fusion: выключен" : "⚡ Fusion mode: off",
+  modeTitle: RU ? "Режим fusion" : "Fusion mode",
+  modeDescription: RU
+    ? "Включение добавляет fusion_delegate в активные инструменты и при необходимости ставит воркер-агента; выключение убирает инструмент."
+    : "Turning on adds fusion_delegate to the active tools and installs the worker agent if missing; turning off removes the tool.",
+  approvalRequired: RU ? "✋ Подтверждение: требуется" : "✋ Approval: required",
+  approvalOptional: RU ? "✋ Подтверждение: не требуется" : "✋ Approval: not required",
+  approvalTitle: RU ? "Подтверждение делегаций" : "Delegate approval",
+  approvalDescription: RU
+    ? "Когда требуется, делегирование ждёт явного подтверждения лида, прежде чем воркеры начнут работу."
+    : "When required, a delegation waits for the lead's explicit approval before workers run.",
+  listHint: RU
+    ? "Введите значения через пробел или запятую. «clear» — очистить список, пустой ввод — отмена."
+    : 'Enter values separated by spaces or commas. "clear" empties the list; blank cancels.',
+};
+
+/** The word that empties a list (the operator types it instead of the values). */
+const CLEAR_PATTERN = /^(clear|очистить)$/i;
+
+/**
+ * The localized action rows (done/back/on/off/approval options). Exported so
+ * tests script the menu with the exact labels the current locale renders.
+ */
+export const MENU_ACTIONS = {
+  done: L.done,
+  back: L.back,
+  turnOn: L.turnOn,
+  turnOff: L.turnOff,
+  approvalRequired: L.approvalRequired,
+  approvalOptional: L.approvalOptional,
+} as const;
+
+// ─── Field specs ─────────────────────────────────────────────────────────────
+
+const NUMBER_KEYS = ["workers", "maxParallel", "taskTimeoutMs", "maxSteps"] as const;
+type NumberKey = (typeof NUMBER_KEYS)[number];
+
+const LIST_KEYS = ["workerModels", "blockedTools", "leadBlockedTools"] as const;
+type ListKey = (typeof LIST_KEYS)[number];
+
+type MenuItemId = "enabled" | "approval" | NumberKey | ListKey;
+
+export type { MenuItemId };
+
+interface NumberSpec {
+  key: NumberKey;
+  label: string;
+  description: string;
+}
+
+const NUMBER_SPECS: Record<NumberKey, NumberSpec> = {
+  workers: {
+    key: "workers",
+    label: RU ? "👷 Воркеры (ширина пула)" : "👷 Workers (pool width)",
+    description: RU
+      ? "Сколько свежих воркер-агентов может породить один вызов fusion_delegate."
+      : "How many fresh worker agents one fusion_delegate call may spawn.",
+  },
+  maxParallel: {
+    key: "maxParallel",
+    label: RU ? "🔀 Максимум параллельно" : "🔀 Max parallel",
+    description: RU
+      ? "Сколько воркеров из пула выполняются одновременно."
+      : "How many of the pool's workers execute at the same time.",
+  },
+  taskTimeoutMs: {
+    key: "taskTimeoutMs",
+    label: RU ? "⏱ Таймаут задачи (мс)" : "⏱ Task timeout (ms)",
+    description: RU
+      ? "Бюджет времени на одну задачу воркера; воркер, превысивший его, отменяется."
+      : "Wall-time budget per worker task; a worker exceeding it is cancelled.",
+  },
+  maxSteps: {
+    key: "maxSteps",
+    label: RU ? "🔁 Максимум шагов" : "🔁 Max steps",
+    description: RU
+      ? "Предельное число ходов модели на одну задачу воркера."
+      : "Maximum model turns per worker task.",
+  },
+};
+
+interface ListSpec {
+  key: ListKey;
+  label: string;
+  description: string;
+  /** Rendered in place of the values when the list is empty. */
+  empty: string;
+}
+
+const LIST_SPECS: Record<ListKey, ListSpec> = {
+  workerModels: {
+    key: "workerModels",
+    label: RU ? "🔧 Модели воркеров" : "🔧 Worker models",
+    description: RU
+      ? "Ротация моделей воркеров в формате provider/model. Пустой список — fan-out отказывает, пока модели не заданы."
+      : "Worker model rotation as provider/model ids. An empty list refuses every fan-out until models are set.",
+    empty: RU
+      ? "(нет — fan-out отказывает, пока модели не заданы)"
+      : "(none — every fan-out is refused until models are set)",
+  },
+  blockedTools: {
+    key: "blockedTools",
+    label: RU ? "🚫 Запрещённые воркерам инструменты" : "🚫 Worker blocked tools",
+    description: RU
+      ? "Инструменты, изъятые из активного набора каждого воркера fusion-пула."
+      : "Tools removed from every fusion worker's active set.",
+    empty: RU ? "(нет)" : "(none)",
+  },
+  leadBlockedTools: {
+    key: "leadBlockedTools",
+    label: RU ? "🧱 Запрещённые лиду инструменты" : "🧱 Lead blocked tools",
+    description: RU
+      ? "Инструменты, изъятые у сессии лида, пока fusion включён. Вступает в силу после перезапуска pi."
+      : "Tools removed from the lead session while fusion is on. Takes effect after pi restarts.",
+    empty: RU ? "(нет)" : "(none)",
+  },
+};
+
+function isNumberKey(id: MenuItemId): id is NumberKey {
+  return (NUMBER_KEYS as readonly string[]).includes(id);
+}
+
+function isListKey(id: MenuItemId): id is ListKey {
+  return (LIST_KEYS as readonly string[]).includes(id);
+}
+
+// ─── Rendering ───────────────────────────────────────────────────────────────
+
+/** `600000` → `10мин`/`10m`; `45000` → `45с`/`45s`; other values stay in ms. */
+function humanMs(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000}${RU ? "мин" : "m"}`;
+  if (ms >= 1000 && ms % 1000 === 0) return `${ms / 1000}${RU ? "с" : "s"}`;
+  return `${ms}${RU ? "мс" : "ms"}`;
+}
+
+function joinOr(items: string[], fallback: string): string {
+  return items.length > 0 ? items.join(", ") : fallback;
+}
+
+/** One line per setting — the snapshot the menu title and the notices render. */
+export function formatCurrent(config: FusionConfig): string {
+  return [
+    `  ${RU ? "режим" : "mode"}: ${config.enabled ? (RU ? "вкл" : "on") : RU ? "выкл" : "off"}`,
+    `  workers: ${config.workers} (maxParallel ${config.maxParallel})`,
+    `  ${RU ? "модели" : "models"}: ${joinOr(config.workerModels, LIST_SPECS.workerModels.empty)}`,
+    `  timeout: ${config.taskTimeoutMs} ms (${humanMs(config.taskTimeoutMs)})`,
+    `  maxSteps: ${config.maxSteps}`,
+    `  ${RU ? "подтверждение" : "approval"}: ${
+      config.requireApproval ? (RU ? "требуется" : "required") : RU ? "нет" : "off"
+    }`,
+    `  ${RU ? "воркерам запрещены" : "worker blocked"}: ${joinOr(config.blockedTools, "—")}`,
+    `  ${RU ? "лиду запрещены" : "lead blocked"}: ${joinOr(config.leadBlockedTools, "—")}`,
+  ].join("\n");
+}
+
+export interface MenuItem {
+  id: MenuItemId;
+  label: string;
+}
+
+/**
+ * The selectable menu rows with the current value baked into each label.
+ * Exported so tests can pick a row by id without depending on the locale.
+ */
+export function fusionMenuItems(config: FusionConfig): MenuItem[] {
+  const numberLabel = (spec: NumberSpec): string => {
+    const value = config[spec.key];
+    const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(value)})` : "";
+    return `${spec.label} — ${value}${suffix}`;
+  };
+  const listLabel = (spec: ListSpec): string =>
+    `${spec.label} — ${joinOr(config[spec.key], spec.empty)}`;
+  return [
+    { id: "enabled", label: config.enabled ? L.modeOn : L.modeOff },
+    { id: "workerModels", label: listLabel(LIST_SPECS.workerModels) },
+    { id: "workers", label: numberLabel(NUMBER_SPECS.workers) },
+    { id: "maxParallel", label: numberLabel(NUMBER_SPECS.maxParallel) },
+    { id: "taskTimeoutMs", label: numberLabel(NUMBER_SPECS.taskTimeoutMs) },
+    { id: "maxSteps", label: numberLabel(NUMBER_SPECS.maxSteps) },
+    { id: "approval", label: config.requireApproval ? L.approvalRequired : L.approvalOptional },
+    { id: "blockedTools", label: listLabel(LIST_SPECS.blockedTools) },
+    { id: "leadBlockedTools", label: listLabel(LIST_SPECS.leadBlockedTools) },
+  ];
+}
+
+function menuTitle(config: FusionConfig): string {
+  return `${L.title}\n\n${L.currentLabel}\n${formatCurrent(config)}`;
+}
+
+// ─── Editors ─────────────────────────────────────────────────────────────────
+
+async function editEnabled(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  config: FusionConfig,
+): Promise<void> {
+  const choice = await dialogs.select(`${L.modeTitle}\n\n${L.modeDescription}`, [
+    L.turnOn,
+    L.turnOff,
+    L.back,
+  ]);
+  if (!choice || choice === L.back) return;
+  const enable = choice === L.turnOn;
+  if (config.enabled === enable) {
+    deps.notify(L.noChange, "info");
+    return;
+  }
+  // turnFusion persists `enabled` and moves the tool in or out of the active
+  // set (installing the worker agent when needed) — the exact subcommand path.
+  turnFusion(deps, enable);
+}
+
+async function editNumber(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  spec: NumberSpec,
+  config: FusionConfig,
+): Promise<void> {
+  const { min, max } = FUSION_CONFIG_BOUNDS[spec.key];
+  const value = config[spec.key];
+  const maxText = max === Number.MAX_SAFE_INTEGER ? "∞" : String(max);
+  const rangeText = `${L.range}: ${min} – ${maxText}`;
+  const title = [
+    `${spec.label} (${L.current}: ${value})`,
+    "",
+    spec.description,
+    "",
+    `${rangeText}  |  ${L.defaultLabel}: ${FUSION_CONFIG_DEFAULTS[spec.key]}`,
+    "",
+    L.enterValue,
+  ].join("\n");
+  const input = await dialogs.input(title, String(value));
+  if (!input || input.trim().length === 0) {
+    deps.notify(L.noChange, "info");
+    return;
+  }
+  const parsed = parsePositiveInt(input);
+  if (parsed === null || parsed < min || parsed > max) {
+    deps.notify(`${L.invalid} (${rangeText})`, "error");
+    return;
+  }
+  deps.persistConfig({ ...deps.loadConfig(), [spec.key]: parsed });
+  const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(parsed)})` : "";
+  deps.notify(`${spec.label} → ${parsed}${suffix}`, "info");
+}
+
+async function editList(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  spec: ListSpec,
+  config: FusionConfig,
+): Promise<void> {
+  const current = config[spec.key];
+  const title = [
+    `${spec.label} — ${joinOr(current, spec.empty)}`,
+    "",
+    spec.description,
+    "",
+    L.listHint,
+  ].join("\n");
+  const input = await dialogs.input(title, current.join(", "));
+  if (!input || input.trim().length === 0) {
+    deps.notify(L.noChange, "info");
+    return;
+  }
+  // The same separator rule as `/fusion model`; `clear` is the explicit way
+  // to empty a list, because blank input is reserved for cancelling. A
+  // separator-only input also parses to zero entries — refused like the
+  // command does, not persisted as a silent wipe (review fix).
+  const trimmed = input.trim();
+  if (!CLEAR_PATTERN.test(trimmed)) {
+    const next = input.split(/[\s,]+/).filter((id) => id.length > 0);
+    if (next.length === 0) {
+      deps.notify(`${L.invalid} (${L.listHint})`, "error");
+      return;
+    }
+    deps.persistConfig({ ...deps.loadConfig(), [spec.key]: next });
+    deps.notify(`${spec.label} → ${joinOr(next, spec.empty)}`, "info");
+    return;
+  }
+  deps.persistConfig({ ...deps.loadConfig(), [spec.key]: [] });
+  deps.notify(`${spec.label} → ${spec.empty}`, "info");
+}
+
+async function editApproval(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  config: FusionConfig,
+): Promise<void> {
+  const choice = await dialogs.select(`${L.approvalTitle}\n\n${L.approvalDescription}`, [
+    L.approvalRequired,
+    L.approvalOptional,
+    L.back,
+  ]);
+  if (!choice || choice === L.back) return;
+  const required = choice === L.approvalRequired;
+  if (config.requireApproval === required) {
+    deps.notify(L.noChange, "info");
+    return;
+  }
+  deps.persistConfig({ ...deps.loadConfig(), requireApproval: required });
+  deps.notify(`${L.approvalTitle} → ${required ? L.approvalRequired : L.approvalOptional}`, "info");
+}
+
+// ─── Main menu loop ──────────────────────────────────────────────────────────
+
+/**
+ * Runs the `/fusion config` menu until the operator picks "done". Every loop
+ * re-reads fusion.json, so edits made outside the menu (another `/fusion`
+ * call, a manual file edit) are reflected on the next screen.
+ */
+export async function interactiveFusionConfig(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+): Promise<void> {
+  deps.notify(`${L.title}\n\n${L.currentLabel}\n${formatCurrent(deps.loadConfig())}`, "info");
+  while (true) {
+    const config = deps.loadConfig();
+    const items = fusionMenuItems(config);
+    const choice = await dialogs.select(menuTitle(config), [
+      ...items.map((item) => item.label),
+      L.done,
+    ]);
+    if (!choice || choice === L.done) break;
+    try {
+      const item = items.find((entry) => entry.label === choice);
+      if (!item) continue;
+      if (item.id === "enabled") await editEnabled(deps, dialogs, config);
+      else if (item.id === "approval") await editApproval(deps, dialogs, config);
+      else if (isNumberKey(item.id)) await editNumber(deps, dialogs, NUMBER_SPECS[item.id], config);
+      else if (isListKey(item.id)) await editList(deps, dialogs, LIST_SPECS[item.id], config);
+    } catch (error) {
+      deps.notify(
+        L.errorPrefix + (error instanceof Error ? error.message : String(error)),
+        "error",
+      );
+    }
+  }
+  deps.notify(`${L.saved}\n${formatCurrent(deps.loadConfig())}`, "info");
+}

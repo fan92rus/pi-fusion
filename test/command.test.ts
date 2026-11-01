@@ -59,6 +59,10 @@ function makeDeps(config?: Partial<FusionConfig>) {
     notify: (message, level = "info") => {
       notices.push({ message, level });
     },
+    dialogs: null,
+    interactiveConfig: async () => {
+      calls.push("interactiveConfig");
+    },
   };
   return {
     deps,
@@ -79,6 +83,7 @@ describe("getFusionArgumentCompletions", () => {
   it("filters by the typed prefix", () => {
     expect(getFusionArgumentCompletions("wo")?.map((item) => item.value)).toEqual(["workers"]);
     expect(getFusionArgumentCompletions("st")?.map((item) => item.value)).toEqual(["status"]);
+    expect(getFusionArgumentCompletions("conf")?.map((item) => item.value)).toEqual(["config"]);
   });
 
   it("returns null when a subcommand is fully typed", () => {
@@ -105,27 +110,27 @@ describe("renderFusionHelp", () => {
 });
 
 describe("runFusionCommand: help routing", () => {
-  it("prints help for empty args and touches nothing else", () => {
+  it("prints help for empty args and touches nothing else", async () => {
     const host = makeDeps();
-    runFusionCommand("", host.deps);
+    await runFusionCommand("", host.deps);
     expect(host.notices).toHaveLength(1);
     expect(host.notices[0]?.level).toBe("info");
     expect(host.notices[0]?.message).toBe(renderFusionHelp());
     expect(host.calls).toEqual([]);
   });
 
-  it("prints help for help, --help and -h", () => {
+  it("prints help for help, --help and -h", async () => {
     for (const arg of ["help", "--help", "-h"]) {
       const host = makeDeps();
-      runFusionCommand(arg, host.deps);
+      await runFusionCommand(arg, host.deps);
       expect(host.notices[0]?.message).toBe(renderFusionHelp());
       expect(host.persisted()).toBe(0);
     }
   });
 
-  it("rejects an unknown subcommand with an error and no persist", () => {
+  it("rejects an unknown subcommand with an error and no persist", async () => {
     const host = makeDeps();
-    runFusionCommand("restart", host.deps);
+    await runFusionCommand("restart", host.deps);
     expect(host.notices[0]?.level).toBe("error");
     expect(host.notices[0]?.message).toContain("Unknown");
     expect(host.persisted()).toBe(0);
@@ -133,9 +138,9 @@ describe("runFusionCommand: help routing", () => {
 });
 
 describe("runFusionCommand: on", () => {
-  it("persists enabled=true, activates the tool and installs a missing agent", () => {
+  it("persists enabled=true, activates the tool and installs a missing agent", async () => {
     const host = makeDeps({ enabled: false });
-    runFusionCommand("on", host.deps);
+    await runFusionCommand("on", host.deps);
     expect(host.config().enabled).toBe(true);
     expect(host.active()).toContain(TOOL);
     expect(host.calls).toContain("installAgent");
@@ -143,11 +148,11 @@ describe("runFusionCommand: on", () => {
     expect(host.config()).toEqual({ ...FUSION_CONFIG_DEFAULTS, enabled: true });
     expect(host.notices[0]?.level).toBe("info");
   });
-  it("keeps the tool when already active and skips install when the agent exists", () => {
+  it("keeps the tool when already active and skips install when the agent exists", async () => {
     const host = makeDeps({ enabled: true });
     host.deps.agentInstalled = () => true;
     host.active().push(TOOL);
-    runFusionCommand("on", host.deps);
+    await runFusionCommand("on", host.deps);
     expect(host.active()).toEqual(["read", "bash", TOOL]);
     expect(host.calls).not.toContain("installAgent");
     expect(host.calls).not.toContain("setActiveTools");
@@ -155,37 +160,37 @@ describe("runFusionCommand: on", () => {
 });
 
 describe("runFusionCommand: off", () => {
-  it("persists enabled=false and removes the tool from the active set", () => {
+  it("persists enabled=false and removes the tool from the active set", async () => {
     const host = makeDeps({ enabled: true });
     host.active().push(TOOL);
-    runFusionCommand("off", host.deps);
+    await runFusionCommand("off", host.deps);
     expect(host.config().enabled).toBe(false);
     expect(host.active()).not.toContain(TOOL);
     expect(host.active()).toEqual(["read", "bash"]);
     expect(host.calls).not.toContain("installAgent");
   });
 
-  it("leaves the active set untouched when the tool is not in it", () => {
+  it("leaves the active set untouched when the tool is not in it", async () => {
     const host = makeDeps({ enabled: true });
-    runFusionCommand("off", host.deps);
+    await runFusionCommand("off", host.deps);
     expect(host.calls).not.toContain("setActiveTools");
     expect(host.config().enabled).toBe(false);
   });
 });
 
 describe("runFusionCommand: workers", () => {
-  it("persists a positive integer width and preserves the other fields", () => {
+  it("persists a positive integer width and preserves the other fields", async () => {
     const host = makeDeps({ workers: 3, workerModels: ["m/a"] });
-    runFusionCommand("workers 4", host.deps);
+    await runFusionCommand("workers 4", host.deps);
     expect(host.config().workers).toBe(4);
     expect(host.config().workerModels).toEqual(["m/a"]);
     expect(host.notices[0]?.level).toBe("info");
   });
 
-  it("rejects zero, negative, fractional and non-numeric widths", () => {
+  it("rejects zero, negative, fractional and non-numeric widths", async () => {
     for (const arg of ["workers 0", "workers -1", "workers 1.5", "workers abc", "workers"]) {
       const host = makeDeps();
-      runFusionCommand(arg, host.deps);
+      await runFusionCommand(arg, host.deps);
       expect(host.notices[0]?.level).toBe("error");
       expect(host.persisted()).toBe(0);
     }
@@ -193,25 +198,25 @@ describe("runFusionCommand: workers", () => {
 });
 
 describe("runFusionCommand: model", () => {
-  it("persists a comma-separated rotation, trimming entries", () => {
+  it("persists a comma-separated rotation, trimming entries", async () => {
     const host = makeDeps();
-    runFusionCommand("model openai/gpt-5-mini, google/gemini-2.5-flash", host.deps);
+    await runFusionCommand("model openai/gpt-5-mini, google/gemini-2.5-flash", host.deps);
     expect(host.config().workerModels).toEqual(["openai/gpt-5-mini", "google/gemini-2.5-flash"]);
     expect(host.notices[0]?.level).toBe("info");
   });
 
-  it("rejects an empty rotation", () => {
+  it("rejects an empty rotation", async () => {
     for (const arg of ["model", "model , ,"]) {
       const host = makeDeps();
-      runFusionCommand(arg, host.deps);
+      await runFusionCommand(arg, host.deps);
       expect(host.notices[0]?.level).toBe("error");
       expect(host.persisted()).toBe(0);
     }
   });
 
-  it("matches the subcommand case-insensitively and keeps model-id case (review fix)", () => {
+  it("matches the subcommand case-insensitively and keeps model-id case (review fix)", async () => {
     const host = makeDeps();
-    runFusionCommand("MODEL Zai-Coding-CN/GLM-5.3-Flash, OpenAI/GPT-6-Luna", host.deps);
+    await runFusionCommand("MODEL Zai-Coding-CN/GLM-5.3-Flash, OpenAI/GPT-6-Luna", host.deps);
     expect(host.config().workerModels).toEqual([
       "Zai-Coding-CN/GLM-5.3-Flash",
       "OpenAI/GPT-6-Luna",
@@ -220,44 +225,80 @@ describe("runFusionCommand: model", () => {
 });
 
 describe("runFusionCommand: timeout", () => {
-  it("persists a positive integer ms budget", () => {
+  it("persists a positive integer ms budget", async () => {
     const host = makeDeps({ taskTimeoutMs: 600_000 });
-    runFusionCommand("timeout 300000", host.deps);
+    await runFusionCommand("timeout 300000", host.deps);
     expect(host.config().taskTimeoutMs).toBe(300_000);
     expect(host.notices[0]?.level).toBe("info");
   });
 
-  it("rejects zero, negative, fractional and non-numeric budgets", () => {
+  it("rejects zero, negative, fractional and non-numeric budgets", async () => {
     for (const arg of ["timeout 0", "timeout -5", "timeout 2.5s", "timeout", "timeout soon"]) {
       const host = makeDeps();
-      runFusionCommand(arg, host.deps);
+      await runFusionCommand(arg, host.deps);
       expect(host.notices[0]?.level).toBe("error");
       expect(host.persisted()).toBe(0);
     }
   });
 
-  it("rejects a budget outside the config bounds without persisting (review fix)", () => {
+  it("rejects a budget outside the config bounds without persisting (review fix)", async () => {
     for (const arg of ["timeout 1000", "timeout 29999", "timeout 3600001"]) {
       const host = makeDeps();
-      runFusionCommand(arg, host.deps);
+      await runFusionCommand(arg, host.deps);
       expect(host.notices[0]?.level).toBe("error");
       expect(host.notices[0]?.message).toContain("from 30000 to 3600000");
       expect(host.persisted()).toBe(0);
     }
   });
 
-  it("accepts the exact config bounds", () => {
+  it("accepts the exact config bounds", async () => {
     const low = makeDeps();
-    runFusionCommand("timeout 30000", low.deps);
+    await runFusionCommand("timeout 30000", low.deps);
     expect(low.config().taskTimeoutMs).toBe(30_000);
     const high = makeDeps();
-    runFusionCommand("timeout 3600000", high.deps);
+    await runFusionCommand("timeout 3600000", high.deps);
     expect(high.config().taskTimeoutMs).toBe(3_600_000);
   });
 });
 
+describe("runFusionCommand: config", () => {
+  it("refuses in headless mode with an error and never opens the menu", async () => {
+    const host = makeDeps();
+    let opened = false;
+    host.deps.interactiveConfig = async () => {
+      opened = true;
+    };
+    await runFusionCommand("config", host.deps);
+    expect(opened).toBe(false);
+    expect(host.notices).toEqual([
+      {
+        level: "error",
+        message:
+          "Interactive config requires a TUI. Edit fusion.json directly, or use /fusion workers|model|timeout.",
+      },
+    ]);
+    expect(host.persisted()).toBe(0);
+  });
+
+  it("opens the interactive menu when dialogs are attached", async () => {
+    const host = makeDeps();
+    host.deps.dialogs = {
+      select: async () => undefined,
+      input: async () => undefined,
+      confirm: async () => true,
+    };
+    let opened = false;
+    host.deps.interactiveConfig = async () => {
+      opened = true;
+    };
+    await runFusionCommand("config", host.deps);
+    expect(opened).toBe(true);
+    expect(host.persisted()).toBe(0);
+  });
+});
+
 describe("runFusionCommand: status", () => {
-  it("reports enabled, models, width, timeout and agent presence", () => {
+  it("reports enabled, models, width, timeout and agent presence", async () => {
     const host = makeDeps({
       enabled: true,
       workers: 3,
@@ -266,7 +307,7 @@ describe("runFusionCommand: status", () => {
       workerModels: ["m/a", "m/b"],
     });
     host.deps.agentInstalled = () => true;
-    runFusionCommand("status", host.deps);
+    await runFusionCommand("status", host.deps);
     const status = host.notices[0]?.message ?? "";
     expect(host.notices[0]?.level).toBe("info");
     expect(status).toContain("on");
@@ -278,9 +319,9 @@ describe("runFusionCommand: status", () => {
     expect(host.persisted()).toBe(0);
   });
 
-  it("reports off, the empty rotation and a missing agent", () => {
+  it("reports off, the empty rotation and a missing agent", async () => {
     const host = makeDeps({ enabled: false, workerModels: [] });
-    runFusionCommand("status", host.deps);
+    await runFusionCommand("status", host.deps);
     const status = host.notices[0]?.message ?? "";
     expect(status).toContain("off");
     expect(status).toContain("(none");
@@ -291,17 +332,20 @@ describe("runFusionCommand: status", () => {
 describe("runFusionCommand: guidance interplay (F08)", () => {
   // The section lives in guidance.ts; it appears/disappears because the
   // facts provider reads the config the command persists — per run.
-  function sectionAfterCommand(args: string, initial: Partial<FusionConfig>): string {
+  function sectionAfterCommand(args: string, initial: Partial<FusionConfig>): Promise<string> {
     const host = makeDeps(initial);
-    runFusionCommand(args, host.deps);
-    const options: { appendSystemPrompt: string } = { appendSystemPrompt: "" };
-    applyFusionSection(options, { ...host.config() });
-    return options.appendSystemPrompt;
+    return runFusionCommand(args, host.deps).then(() => {
+      const options: { appendSystemPrompt: string } = { appendSystemPrompt: "" };
+      applyFusionSection(options, { ...host.config() });
+      return options.appendSystemPrompt;
+    });
   }
 
-  it("on makes the section appear, off removes it", () => {
-    expect(sectionAfterCommand("on", { enabled: false })).toContain(FUSION_SECTION_HEADING);
-    expect(sectionAfterCommand("off", { enabled: true })).not.toContain(FUSION_SECTION_HEADING);
+  it("on makes the section appear, off removes it", async () => {
+    expect(await sectionAfterCommand("on", { enabled: false })).toContain(FUSION_SECTION_HEADING);
+    expect(await sectionAfterCommand("off", { enabled: true })).not.toContain(
+      FUSION_SECTION_HEADING,
+    );
   });
 });
 

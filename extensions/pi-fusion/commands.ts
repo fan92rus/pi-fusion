@@ -27,6 +27,18 @@ export interface FusionSubcommand {
   description: string;
 }
 
+/**
+ * The dialog slice of pi's `ExtensionUIContext` the interactive config menu
+ * needs. Duck-typed (pi-autoresearch `config-ui.ts` precedent) so tests can
+ * script dialogs without pi's process; the real context satisfies it
+ * structurally, so index.ts binds `ctx.ui` directly.
+ */
+export interface FusionUIDialogs {
+  select(title: string, options: string[]): Promise<string | undefined>;
+  input(title: string, placeholder?: string): Promise<string | undefined>;
+  confirm(title: string, message: string): Promise<boolean>;
+}
+
 /** The one list of /fusion subcommands: completions, dispatch and help. */
 export const FUSION_SUBCOMMANDS: readonly FusionSubcommand[] = [
   {
@@ -51,6 +63,11 @@ export const FUSION_SUBCOMMANDS: readonly FusionSubcommand[] = [
   {
     name: "timeout",
     description: "Set the per-task wall-time budget in ms, e.g. /fusion timeout 300000.",
+  },
+  {
+    name: "config",
+    description:
+      "Open the interactive configuration menu (TUI): every fusion.json field with the current values shown.",
   },
   { name: "help", description: "Show this help." },
 ];
@@ -80,6 +97,14 @@ export interface FusionCommandDeps {
   /** Copy the packaged worker agent into the pi agents dir (worker-install.ts). */
   installAgent(): void;
   notify(message: string, level?: "info" | "warning" | "error"): void;
+  /** Dialogs when a dialog-capable UI is attached; null in headless mode — `/fusion config` refuses. */
+  dialogs: FusionUIDialogs | null;
+  /**
+   * Opens the interactive config menu (config-ui.ts `interactiveFusionConfig`).
+   * Injected by index.ts instead of imported here so commands.ts stays free
+   * of the menu module; only meaningful while `dialogs` is non-null.
+   */
+  interactiveConfig(): Promise<void>;
 }
 
 /** The completions for the argument being typed; derived from FUSION_SUBCOMMANDS. */
@@ -102,7 +127,7 @@ export function renderFusionHelp(): string {
 }
 
 /** Dispatches one `/fusion <args>` invocation; every effect goes through deps. */
-export function runFusionCommand(args: string, deps: FusionCommandDeps): void {
+export async function runFusionCommand(args: string, deps: FusionCommandDeps): Promise<void> {
   const trimmed = (args ?? "").trim();
   const lowered = trimmed.toLowerCase();
   if (trimmed.length === 0 || lowered === "help" || HELP_ALIASES.has(lowered)) {
@@ -136,6 +161,16 @@ export function runFusionCommand(args: string, deps: FusionCommandDeps): void {
     case "timeout":
       setNumberField(deps, "taskTimeoutMs", argument, "timeout", "/fusion timeout 300000");
       return;
+    case "config":
+      if (!deps.dialogs) {
+        deps.notify(
+          "Interactive config requires a TUI. Edit fusion.json directly, or use /fusion workers|model|timeout.",
+          "error",
+        );
+        return;
+      }
+      await deps.interactiveConfig();
+      return;
     default:
       deps.notify(`Unknown /fusion subcommand: ${name}. Run /fusion help for the list.`, "error");
   }
@@ -147,18 +182,22 @@ export function registerFusionCommand(
   makeDeps: (ctx: ExtensionCommandContext) => FusionCommandDeps,
 ): void {
   pi.registerCommand("fusion", {
-    description: "Configure fusion mode: on, off, status, workers, model, timeout, help",
+    description: "Configure fusion mode: on, off, status, workers, model, timeout, config, help",
     getArgumentCompletions: (argumentPrefix) => getFusionArgumentCompletions(argumentPrefix),
     handler: async (args, ctx) => {
-      runFusionCommand(args, makeDeps(ctx));
+      await runFusionCommand(args, makeDeps(ctx));
     },
   });
 }
 
 // ─── subcommands ───────────────────────────────────────────────────────────
 
-/** on/off: persist enabled, then move the tool in or out of the active set. */
-function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
+/**
+ * on/off: persist enabled, then move the tool in or out of the active set.
+ * Exported for the interactive config menu, which flips the mode from
+ * `/fusion config` through the exact subcommand path (config-ui.ts).
+ */
+export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
   deps.persistConfig({ ...deps.loadConfig(), enabled });
   const active = deps.getActiveTools();
   const has = active.includes(deps.toolName);
@@ -241,8 +280,11 @@ function describedLines(entries: readonly FusionSubcommand[]): string[] {
   return entries.map((entry) => `${entry.name.padEnd(nameColumnWidth)}${entry.description}`);
 }
 
-/** One token of `^\d+$` worth at least 1; everything else is a usage error. */
-function parsePositiveInt(text: string): number | null {
+/**
+ * One token of `^\d+$` worth at least 1; everything else is a usage error.
+ * Exported for the interactive config menu's number editors (config-ui.ts).
+ */
+export function parsePositiveInt(text: string): number | null {
   if (!/^\d+$/.test(text.trim())) return null;
   const value = Number.parseInt(text.trim(), 10);
   return Number.isInteger(value) && value >= 1 ? value : null;

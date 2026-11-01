@@ -11,7 +11,9 @@ context: |
   Исторические SDD-документы (план F01–F20, спека 001 fanout-engine, идея 001) —
   дословно в changes/archive/2026-11-01-legacy-sdd-import/; спека 001 реализована в коде.
   Активный черновик ролей и доступа лида — changes/fusion-roles-and-lead-access/
-  (ревью не пройдено, решения OQ-1/OQ-4 не утверждены).
+  (дизайн rev.3, ещё ожидает финального ревью и аппрува владельца; OQ-1/OQ-4
+  утверждены 2026-11-01: powershell в дефолтном блоке; граница доступа — realpath
+  цели openspec/ со следованием ссылке, dangling-компоненты запрещены).
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

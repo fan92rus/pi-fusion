@@ -179,8 +179,11 @@ export function registerFusionDelegate(
     },
   });
   pi.on("session_start", (event) => {
-    // A new session must not quote the previous session's request; a reload
-    // re-reads the same session, so the captured request stays valid.
+    // Defensive reset against instance reuse across sessions: in the real
+    // host every new/resume/fork/reload builds a fresh closure (so the
+    // request starts empty anyway), and a reload loses the captured prompt
+    // just the same. Keeping it on "reload" costs nothing and documents the
+    // intent: only a genuinely new conversation clears the quote.
     if (event?.reason !== "reload") originalRequest = undefined;
     if (!readConfig().enabled) {
       pi.setActiveTools(pi.getActiveTools().filter((name) => name !== FUSION_TOOL_NAME));

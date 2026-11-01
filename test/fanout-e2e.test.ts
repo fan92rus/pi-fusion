@@ -325,6 +325,20 @@ describe("E2E: original request quoted into briefs", () => {
     expect(briefs[0]).toContain("continue");
   });
 
+  it("a reload keeps the captured request", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "Kept across reload" });
+    fire("session_start", { reason: "reload" });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain("Kept across reload");
+  });
+
   it("an exactly-280-char message replaces the request; 279 merges", async () => {
     const { host, execute, fire } = setup(CONFIG);
     const a280 = "A".repeat(280);

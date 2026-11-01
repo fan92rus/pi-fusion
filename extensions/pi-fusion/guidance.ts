@@ -31,7 +31,7 @@ export type FusionGuidanceFacts = Pick<
 const BEHAVIOUR_LINES = [
   "- You lead: read enough to decide, plan the independent parts, delegate the doing with `fusion_delegate`, then review what comes back.",
   "- One task per independent part, all in one `fusion_delegate` call. A big part gets its own task; small ones are grouped. Prefer sending more parts over doing any yourself.",
-  "- Each task's `instructions` must stand alone: a worker sees the operator's request, not this conversation, and cannot ask. Keep it short: the goal, the paths, what good looks like.",
+  "- The operator's request is quoted into every brief as context (ORIGINAL REQUEST, clipped at 16,000 chars when longer) — mechanically, without your involvement. Your `instructions` still must stand alone: the goal, the paths, what good looks like. A worker sees that brief, not this conversation, and cannot ask.",
   "- `files` names the paths the task starts from or produces. The operator approves them once, so the workers can write there.",
   "- You have no bash, write or edit: workers write the code and run the checks. Verify by reading each report against its brief and checking its `evidence` (the checks the worker ran and their output). For an independent check, send a fresh verification task that runs the checks and puts their output in `evidence`.",
   "- `failed`, `cancelled` or `needs_orchestrator` is not done. Rework goes out as another `fusion_delegate` call that says what was wrong and what good looks like.",

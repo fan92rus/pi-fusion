@@ -23,6 +23,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { FOLLOW_UP_MAX_CHARS } from "./briefs.ts";
 import { type FusionCommandDeps, registerFusionCommand } from "./commands.ts";
 import { loadFusionConfig, persistFusionConfig } from "./config.ts";
 import { interactiveFusionConfig } from "./config-ui.ts";
@@ -95,6 +96,7 @@ async function runFusionDelegate(
   params: unknown,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
+  originalRequest: string | undefined,
 ): Promise<ToolResult> {
   const validation = validateFusionCall(params);
   if (!validation.ok) {
@@ -112,6 +114,7 @@ async function runFusionDelegate(
     available: () => isSeamAvailable(pi),
     makeClient: () => createFanoutSeamClient({ events: pi.events, cwd: ctx.cwd }),
     ...(abort !== undefined ? { signal: abort } : {}),
+    ...(originalRequest !== undefined ? { originalRequest } : {}),
   });
   if (isDegradationRefusal(outcome)) {
     // FR-009: the whole call is refused before any worker starts.
@@ -132,6 +135,25 @@ export function registerFusionDelegate(
   config: (FanoutConfig & { enabled: boolean }) | (() => FanoutConfig & { enabled: boolean }),
 ): void {
   const readConfig = typeof config === "function" ? config : () => config;
+  // The operator's request that started the run (atomic-agent
+  // `pickOriginalRequest` precedent): every worker brief quotes it as
+  // context, because a brief is a summary and thin summaries lose the job.
+  // A user message shorter than FOLLOW_UP_MAX_CHARS («continue», «fix the
+  // failing test») is a follow-up: it merges with the previous request
+  // instead of replacing it — quoted alone it IS the thin brief. An empty
+  // prompt (an image-only run) keeps the previous request; a non-user run
+  // (steer, custom) never touches it.
+  let originalRequest: string | undefined;
+  pi.on("before_agent_start", (event) => {
+    if (event.messageType !== "user") return;
+    const text = event.prompt.trim();
+    if (text.length === 0) return;
+    if (text.length < FOLLOW_UP_MAX_CHARS && originalRequest !== undefined) {
+      originalRequest = `${originalRequest}\n\n--- follow-up ---\n${text}`;
+    } else {
+      originalRequest = event.prompt;
+    }
+  });
   pi.registerTool({
     name: FUSION_TOOL_NAME,
     label: "Fusion delegate",
@@ -141,7 +163,7 @@ export function registerFusionDelegate(
     outputSchema: FanoutResultSchema,
     exposure: "direct",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runFusionDelegate(pi, readConfig(), params, signal, ctx);
+      return runFusionDelegate(pi, readConfig(), params, signal, ctx, originalRequest);
     },
   });
   pi.on("session_start", () => {

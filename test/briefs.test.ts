@@ -126,3 +126,55 @@ describe("renderBrief purity and seam payload", () => {
     expect(brief).not.toContain("123456");
   });
 });
+
+describe("renderBrief original request (mechanical quote)", () => {
+  it("quotes the request as a context-only block before the title", () => {
+    const brief = renderBrief(task(), undefined, "Build a turn-based game");
+    const lines = brief.split("\n");
+    expect(lines[0]).toContain("ORIGINAL REQUEST — context only; your task is below");
+    expect(lines[0]).toContain("do only your TASK");
+    expect(brief).toContain("---\nBuild a turn-based game\n---");
+    // The request is context: the task still follows it.
+    expect(brief.indexOf("ORIGINAL REQUEST")).toBeLessThan(brief.indexOf("## Fix the thing"));
+  });
+
+  it("omits the block entirely when no request was captured", () => {
+    expect(renderBrief(task())).toBe("## Fix the thing\n\nDo the thing.");
+    expect(renderBrief(task(), undefined, "")).toBe("## Fix the thing\n\nDo the thing.");
+  });
+
+  it("treats a whitespace-only request as none", () => {
+    expect(renderBrief(task(), undefined, "   \n\t ")).toBe("## Fix the thing\n\nDo the thing.");
+  });
+
+  it("clips the request at the 16,000-char budget and says so", () => {
+    const big = "x".repeat(17_000);
+    const brief = renderBrief(task(), undefined, big);
+    expect(brief).toContain("(truncated: the original request is 17,000 chars");
+    // The quoted body between the block's own markers — nothing beyond the budget.
+    const start = brief.indexOf("---\n") + 4;
+    const body = brief.slice(start, brief.indexOf("\n---", start));
+    expect(body).toHaveLength(16_000);
+  });
+
+  it("does not split a surrogate pair at the clip boundary", () => {
+    // Position 15999 is the high half of an emoji: clipping to 16,000 UTF-16
+    // units would end the body on a lone high surrogate (U+FFFD on encode).
+    const brief = renderBrief(task(), undefined, `${"a".repeat(15_999)}😀`);
+    const start = brief.indexOf("---\n") + 4;
+    const body = brief.slice(start, brief.indexOf("\n---", start));
+    expect(body).toHaveLength(15_999);
+    expect(body.endsWith("a")).toBe(true);
+    const last = body.charCodeAt(body.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+  });
+
+  it("places the request before the contract when both are present", () => {
+    const brief = renderBrief(task(), contract, "The whole job");
+    const requestAt = brief.indexOf("ORIGINAL REQUEST");
+    const contractAt = brief.indexOf("CONTRACT");
+    expect(requestAt).toBeGreaterThanOrEqual(0);
+    expect(contractAt).toBeGreaterThan(requestAt);
+    expect(brief.indexOf("## Fix the thing")).toBeGreaterThan(contractAt);
+  });
+});

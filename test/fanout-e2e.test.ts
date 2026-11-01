@@ -74,12 +74,16 @@ function makeTasks(count: number) {
 function setup(config: FusionConfig, withBus = true) {
   const fake = createFakePi();
   let tool: ToolDefinition | undefined;
+  const handlers = new Map<string, Array<(payload?: unknown) => void>>();
   const api = {
     events: withBus ? fake.events : undefined,
     registerTool(definition: ToolDefinition) {
       tool = definition;
     },
-    on: () => () => {},
+    on: (event: string, handler: (payload?: unknown) => void) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      return () => {};
+    },
     getActiveTools: () => [],
     setActiveTools: () => {},
   };
@@ -91,7 +95,10 @@ function setup(config: FusionConfig, withBus = true) {
       signal,
     } as unknown as ExtensionToolContext);
   };
-  return { host: fake.host, execute };
+  const fire = (event: string, payload?: unknown) => {
+    for (const handler of handlers.get(event) ?? []) handler(payload);
+  };
+  return { host: fake.host, execute, fire };
 }
 
 /**
@@ -187,6 +194,109 @@ describe("E2E scenario (а): width clamp, one model, timeout", () => {
     expect(lines[5]).toBe("clamp perModel: 3 → 2 (per-model cap 2 × 1 model(s))");
     expect(lines[6]).toMatch(/^usage: input=400, .* · часть usage неизвестна$/);
     expect(outcome.details).toBe("5 task(s): 4 done, 1 failed; usage partial");
+  });
+});
+
+describe("E2E: original request quoted into briefs", () => {
+  it("fires the run capture and every worker brief carries the request as context", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", {
+      messageType: "user",
+      prompt: "Build a turn-based game, not a landing page",
+    });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(2) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    const outcome = await promise;
+    const result = asFanout(outcome.structuredContent);
+    expect(result.results.map((row) => row.status)).toStrictEqual(["done", "done"]);
+    expect(briefs).toHaveLength(2);
+    for (const brief of briefs) {
+      expect(brief).toContain("ORIGINAL REQUEST — context only; your task is below");
+      expect(brief).toContain("Build a turn-based game, not a landing page");
+      expect(brief.indexOf("ORIGINAL REQUEST")).toBeLessThan(brief.indexOf("## "));
+    }
+  });
+
+  it("a short follow-up merges with the previous request instead of replacing it", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    const spec = "Build a turn-based game with Three.js and a score HUD";
+    fire("before_agent_start", { messageType: "user", prompt: spec });
+    fire("before_agent_start", { messageType: "user", prompt: "continue" });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    // The thin-brief failure the feature guards against: "continue" alone.
+    expect(briefs[0]).toContain(spec);
+    expect(briefs[0]).toContain("continue");
+    expect(briefs[0]).toContain("follow-up");
+  });
+
+  it("an empty user run keeps the previous request (image-only run)", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "The real request" });
+    fire("before_agent_start", { messageType: "user", prompt: "   " });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain("The real request");
+  });
+
+  it("a non-user run does not touch the captured request", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "The real request" });
+    fire("before_agent_start", { messageType: "custom" });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain("The real request");
+  });
+
+  it("a second long user run replaces the first", async () => {
+    const { host, execute, fire } = setup(CONFIG);
+    fire("before_agent_start", { messageType: "user", prompt: "First job text" });
+    // At or above FOLLOW_UP_MAX_CHARS a message is a new request, not a follow-up.
+    fire("before_agent_start", {
+      messageType: "user",
+      prompt: `Second job text. ${"More work.".repeat(40)}`,
+    });
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).toContain("Second job text");
+    expect(briefs[0]).not.toContain("First job text");
+  });
+
+  it("a run without a captured user prompt leaves the brief exactly the task text", async () => {
+    const { host, execute } = setup(CONFIG);
+    const briefs: string[] = [];
+    const promise = execute({ tasks: makeTasks(1) });
+    await drive(host, (request) => {
+      briefs.push(request.task);
+      return { result: report("done", "ok"), usage: USAGE };
+    });
+    await promise;
+    expect(briefs[0]).not.toContain("ORIGINAL REQUEST");
+    expect(briefs[0]).toContain("instructions for t1");
   });
 });
 

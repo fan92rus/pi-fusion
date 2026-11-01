@@ -20,7 +20,7 @@ interface RegisteredTool {
 /** A pi stand-in: records registrations and keeps the active tool set like the host does. */
 function makePi(initialActive: string[] = ["read", "bash"]) {
   const tools: RegisteredTool[] = [];
-  const handlers = new Map<string, Array<() => void>>();
+  const handlers = new Map<string, Array<(payload?: unknown) => void>>();
   let active = [...initialActive];
   const pi = {
     events: createFakePiEvents(),
@@ -30,7 +30,7 @@ function makePi(initialActive: string[] = ["read", "bash"]) {
       if (tool.exposure === "direct" && !active.includes(tool.name)) active.push(tool.name);
     },
     registerCommand() {}, // fusionExtension now also registers /fusion
-    on(event: string, handler: () => void) {
+    on(event: string, handler: (payload?: unknown) => void) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
       return () => {};
     },
@@ -43,9 +43,10 @@ function makePi(initialActive: string[] = ["read", "bash"]) {
     api: pi as unknown as ExtensionAPI,
     tools,
     active: () => active,
-    fire(event: string) {
-      for (const handler of handlers.get(event) ?? []) handler();
+    fire(event: string, payload?: unknown) {
+      for (const handler of handlers.get(event) ?? []) handler(payload);
     },
+    has: (event: string) => handlers.has(event),
   };
 }
 
@@ -66,6 +67,14 @@ describe("fusion_delegate registration", () => {
     const host = makePi();
     fusionExtension(host.api);
     expect(host.tools.map((t) => t.name)).toContain(FUSION_TOOL_NAME);
+  });
+});
+
+describe("worker-brief request capture", () => {
+  it("registerFusionDelegate hooks before_agent_start to capture the operator's prompt", () => {
+    const { api, has } = makePi();
+    registerFusionDelegate(api, enabledConfig);
+    expect(has("before_agent_start")).toBe(true);
   });
 });
 

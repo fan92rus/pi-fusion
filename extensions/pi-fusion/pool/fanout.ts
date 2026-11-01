@@ -76,6 +76,13 @@ export interface FanoutDeps {
   makeClient: () => FanoutSeamClient;
   /** Esc (§8): abort → :cancel to every in-flight child, queued tasks cancel. */
   signal?: AbortSignal;
+  /**
+   * The operator's request that started the current run, quoted into every
+   * brief as context (atomic-agent `pickOriginalRequest` precedent — briefs
+   * are summaries, and thin summaries lose the job). Undefined/empty when
+   * the extension could not capture it: the brief is then exactly as before.
+   */
+  originalRequest?: string;
 }
 
 export interface WidthPlan {
@@ -407,7 +414,7 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
       client
         .run({
           nodeId: `${task.id}#a1`,
-          task: renderBrief(task, call.contract),
+          task: renderBrief(task, call.contract, deps.originalRequest),
           model,
           timeoutMs,
           hardToolBudget,

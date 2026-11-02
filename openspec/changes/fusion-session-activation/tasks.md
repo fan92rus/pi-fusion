@@ -1,46 +1,62 @@
 # Tasks: session-only активация fusion
 
 > Порядок: §1 (спецификация) → §2 (реализация) → §3 (приёмка). Реализация — только
-> после ГОДЕН ревью §1 и явного утверждения владельца (включая ответы OQ-A/OQ-B).
+> после ГОДЕН ревью §1 и явного утверждения владельца (включая OQ-A/OQ-B/OQ-C).
 > Задачи — в bd (эпик pi-fusion-pu9); воркеры не трогают git/bd.
 
 ## 1. Спецификация и утверждение
 
-- [ ] 1.1 Независимое документное ревью черновика (fusion-reviewer, fresh-контекст,
-  кросс-модель): соответствие решениям владельца 08:59/11:24/11:45; полнота FR-001–FR-007;
-  реализуемость design §2–§5 против кода (commands.ts/index.ts/config.ts/config-bridge.ts/
-  config-ui.ts/restrictions.ts) и API pi; тест-план §7 покрывает FR. Цикл правки →
-  повторное ревью до вердикта ГОДЕН; каждая находка — правка или мотивированный отказ.
-- [ ] 1.2 Утверждение владельца: явный ответ по OQ-A (enabled — исключить с warn+ignore?)
-  и OQ-B (/fork — новая сессия, старт off?), затем утверждение пакета. После утверждения —
-  заморозка спеки (правки только новым проходом цикла).
+- [ ] 1.1 Независимое документное ревью черновика (fusion-reviewer, fresh, кросс-
+  модель) до вердикта ГОДЕН. Раунд 1 (run c65c9407): НЕ ГОДЕН — 2 blockers, 7 majors,
+  7 minors, 3 nits — закрыты в rev.2. Раунд 2 (run 848d4dd7): НЕ ГОДЕН — 1 blocker
+  (шов isEnabled не получает ctx), 6 majors (getEntries vs getBranch; runFusionDelegate
+  в index.ts; e2e-харнесс без sessionManager; пробел command.test 172–188 и
+  tool-wiring 59/76; неполная карта §4), 8 minors, 2 nits — закрыты в rev.3
+  (шов `(ctx) => boolean`; getBranch-семантика; перенос guard в 2.4; e2e-харнесс
+  в §7; полные перечни; FusionGuidanceFacts; ошибки восстановления по-гейтно;
+  реконсайл в обе стороны; идемпотентность vs ленивый restore; source-перезапись;
+  config-bridge рационал; коллизии идентификаторов/in-memory в §9). Следующие
+  раунды — по находкам.
+- [ ] 1.2 Утверждение владельца: явные ответы по OQ-A (исключить enabled, warn
+  once + ignore), OQ-B (fork/new — старт off, записи с владельцем), OQ-C
+  (headless — та же модель без отдельного канала), затем утверждение пакета.
+  После утверждения — заморозка спеки (правки только новым проходом цикла).
 
-## 2. Реализация (TDD; каждая задача — красный→зелёный, гейты волны зелёные)
+## 2. Реализация (TDD; каждая задача — красный→зелёный; гейты волны зелёные)
 
-- [ ] 2.1 Верификация API pi (design §2): sessionId из ctx обработчиков; подпись
-  appendEntry; чтение истории при session_start/resume — по dist/docs pi и рабочему
-  образцу pi-autoresearch (без копирования автозапуска). Результат — короткая справка
-  в отчёте задачи (факты с путями/строками), при расхождении с design — фиксация.
-- [ ] 2.2 Модуль `session-state.ts` + unit-тесты (design §7 unit): set/get, отсутствие
-  sessionId → false, восстановление по записям, изоляция сессий, resetForTests.
-- [ ] 2.3 `commands.ts`: turnFusion on/off → session-state + session-entry, без записи
-  файлов; сообщение «до конца сессии»; showStatus — флаг+источник; runFusionDelegate —
-  самостоятельная проверка флага с отказом FR-004; `/fusion config` не трогает активацию.
-  Component-тесты design §7 (commands).
-- [ ] 2.4 `index.ts`: registration гейтов/guidance/делегации по isSessionEnabled(ctx.sessionId);
-  session_start → restoreSessionFromHistory. Component-тесты design §7 (index/гейты).
-- [ ] 2.5 `config.ts`/`config-bridge.ts`/`config-ui.ts`: исключение `enabled` из схемы
-  (defaults/snapshot/readFields/persist), warn+ignore при чтении, файл не перезаписывается;
-  config-ui без строки enabled. Тесты миграции design §7.
-- [ ] 2.6 Перепись затронутых пинов (глобальный enabled → сессионная модель; единственное
-  разрешённое изменение пинов) + полный прогон: `npm test` / `npm run typecheck` /
-  `npm run lint` / `npm run build` зелёные.
+- [ ] 2.1 Живая сверка фактов API pi (design §2): getSessionId/getEntries/
+  appendEntry/пятый аргумент execute/SessionStartEvent.reason/копирование
+  CustomEntry при createBranchedSession — по dist и мини-пробой (печатать
+  ExtensionContext обработчика session_start); доступность /fusion в headless.
+  Расхождения с design §2 — фиксация и правка спеки до кода.
+- [ ] 2.2 `session-state.ts` + unit-тесты (design §7): owner-фильтр (репродукция
+  «on в родителе → форк → off»), {enabled, source}, идемпотентность, изоляция,
+  ленивый restore.
+- [ ] 2.3 `commands.ts`: turnFusion → session-state + appendEntry (без записи
+  fusion.json; установка профилей сохраняется; идемпотентный on — реконсайл
+  присутствия fusion_delegate); showStatus — флаг+source; идемпотентные сообщения;
+  описания команд. FusionCommandDeps + fakes (design §5). Component-тесты §7.
+- [ ] 2.4 `index.ts` + `restrictions.ts` + `guidance.ts`: реконсайл session_start
+  В ОБЕ СТОРОНЫ (restore до фильтра; on — гарантирует присутствие fusion_delegate);
+  guard `runFusionDelegate` (index.ts:100) с текстом FR-004; шов isEnabled
+  `(ctx) => boolean` с ленивым restore и по-гейтными отказами; собственный тип
+  FusionGuidanceFacts; дочерние сессии без fusion-секции. Component-тесты §7
+  (fake sessionManager в makePi).
+- [ ] 2.5 `config.ts`/`config-bridge.ts`/`config-ui.ts`: исключение enabled из
+  типа/defaults/snapshot/readFields/persist/bridge/ui; warn once per process;
+  файл не перезаписывается. Тесты миграции §7.
+- [ ] 2.6 Перепись пинов по перечню design §7 (command — включая :172–188;
+  config/config-ui/config-bridge/tool-wiring — включая :59/:76; fanout-e2e —
+  включая харнесс :93–97 и :149) + README.md (сессионная модель, миграция);
+  полный прогон: `npm test` / `npm run typecheck` / `npm run lint` /
+  `npm run build` зелёные.
 
 ## 3. Приёмка
 
 - [ ] 3.1 Независимое adversarial-ревью волны 2 (fresh, кросс-модель; ревьюер сам
-  прогоняет гейты; пробует опровергнуть изоляцию сессий и восстановление) → ГОДЕН;
-  коммит волны, сводка в bd.
-- [ ] 3.2 Живая приёмка после перезапуска pi (владелец; протокол design §8, все 5 пунктов);
-  сводка в bd; отметить пункт.
-- [ ] 3.3 sync/archive изменения (архив с датой) + закрытие эпика bd.
+  прогоняет гейты; пробует опровергнуть изоляцию сессий, owner-фильтр форка,
+  ленивый restore) → ГОДЕН; коммит волны; сводка в bd.
+- [ ] 3.2 Живая приёмка после перезапуска pi (design §8, все 6 пунктов, включая
+  форк-кейс и headless по OQ-C); сводка в bd; отметить пункт.
+- [ ] 3.3 Архивация изменения БЕЗ sync (skip_specs, design §10) + закрытие эпика
+  bd pi-fusion-pu9.

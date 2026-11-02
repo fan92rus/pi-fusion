@@ -254,38 +254,79 @@ export function isPathInsideOpenSpecTarget(
   return { allowed: true, candidateReal: candidate.real, boundaryReal };
 }
 
-export type PerlVerdict = { ok: true } | { ok: false; reason: string };
+/** The verdict of one command classifier: allowed, or the reason it is not. */
+export type CommandVerdict = { ok: true } | { ok: false; reason: string };
+
+/** The perl classifier's verdict (design §6.1). */
+export type PerlVerdict = CommandVerdict;
+
+/** The bd classifier's verdict (design §6.5.2). */
+export type BdVerdict = CommandVerdict;
+
+/** One argv word after the shared tokenizer: the value with quotes removed, and the first unquoted expansion character in it (design §6.1.7). */
+export interface ShellToken {
+  value: string;
+  expansion?: string;
+}
+
+/** The shared tokenizer's result. `firstWord` is set only when the first word was read completely before the error (design §6.5.1). */
+export type TokenizeResult =
+  | { ok: true; tokens: ShellToken[] }
+  | { ok: false; reason: string; firstWord?: string };
+
+/** The reason every classifier gives for an unquoted `#` outside quotes (design §6.1.3, B-NEW). */
+export const HASH_REASON = 'неквотированный "#" вне кавычек (комментарий оболочки)';
+
+/** Unquoted characters bash expands before the program runs (glob, brace, tilde, history; design §6.1.7). */
+const EXPANSION_CHARS = "*?[]{}~!";
+
+/** Unquoted characters that end a word and join or redirect commands (design §6.1 п. 3). */
+const WORD_ENDING_METACHARS = ";|&()<>";
+
+/** Unquoted characters bash substitutes inside a word: refused, and they do not end the word. */
+const SUBSTITUTION_CHARS = "`$";
 
 /**
- * The single-perl-invocation classifier (design §6.1): exactly one `perl`
- * call as the FIRST token, POSIX-like quoting, no shell interpreter in the
- * chain. Conservative by construction (TD-07):
- *  - `'…'` is a literal; `"…"` refuses `$`, backtick AND backslash — bash
- *    expands `\"`-escapes inside double quotes, so a naive quote-flipper
- *    diverges from the shell and hides the command tail (bypass B1,
- *    §6.1.2 — reproduced in the refusal tests);
- *  - outside quotes `; | & ( ) < > ` $`, newlines/CR and backslash all
- *    refuse (escaping is not emulated — refusing is simpler than shell-
- *    accurate);
- *  - an unclosed quote refuses; the first token must be exactly `perl`
- *    (`perl5`, `/usr/bin/perl`, `env perl` all refuse; FR-005: the word
- *    perl in any other position grants nothing).
+ * The shared tokenizer of the perl and bd classifiers (design §6.1, §6.1.7,
+ * §6.5.2). Left to right, the first error wins; each refusal text is the rev.3
+ * text, plus the `#` refusal (B-NEW):
+ *  - only a space and a tab separate words, and no trim is applied: `\v`, `\f`
+ *    and NBSP are ordinary word characters;
+ *  - `'…'` is a literal, newlines included; `"…"` refuses `$`, backtick and
+ *    backslash (bash expands them, §6.1.2);
+ *  - outside quotes a line break, CR, `#`, `; | & ( ) < >`, `` ` `` `$` and `\`
+ *    refuse; every unquoted `* ? [ ] { } ~ !` is flagged on its token;
+ *  - an unclosed quote refuses.
  */
-export function isSinglePerlInvocation(command: string): PerlVerdict {
-  const refuse = (reason: string): PerlVerdict => ({ ok: false, reason });
-  const text = command.trim();
-  if (text.length === 0) return refuse("пустая команда");
-
-  const argv: string[] = [];
-  let current = "";
+export function tokenizeShellCommand(command: string): TokenizeResult {
+  const tokens: ShellToken[] = [];
+  let value = "";
+  let expansion: string | undefined;
   let haveToken = false;
+
+  const endToken = (): void => {
+    if (haveToken) tokens.push(expansion === undefined ? { value } : { value, expansion });
+    value = "";
+    expansion = undefined;
+    haveToken = false;
+  };
+
+  // The first word is known only when it was read completely: a closed token
+  // already exists, or the error is a word-ending character right after it.
+  const refuse = (reason: string, endsWord: boolean): TokenizeResult => {
+    const closed = tokens[0];
+    if (closed !== undefined) return { ok: false, reason, firstWord: closed.value };
+    if (endsWord && haveToken) return { ok: false, reason, firstWord: value };
+    return { ok: false, reason };
+  };
+
   let i = 0;
-  while (i < text.length) {
-    const ch = text[i] as string;
+  while (i < command.length) {
+    const ch = command[i] as string;
     if (ch === "'") {
-      const end = text.indexOf("'", i + 1);
-      if (end === -1) return refuse("незакрытая одинарная кавычка");
-      current += text.slice(i + 1, end);
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) return refuse("незакрытая одинарная кавычка", false);
+      value += command.slice(i + 1, end);
       haveToken = true;
       i = end + 1;
       continue;
@@ -293,45 +334,124 @@ export function isSinglePerlInvocation(command: string): PerlVerdict {
     if (ch === '"') {
       i += 1;
       let closed = false;
-      while (i < text.length) {
-        const inner = text[i] as string;
+      while (i < command.length) {
+        const inner = command[i] as string;
         if (inner === "\\")
-          return refuse("backslash в двойных кавычках (эскейп не поддерживается)");
-        if (inner === "$") return refuse("$ в двойных кавычках (подстановка shell)");
-        if (inner === "`") return refuse("backtick в двойных кавычках");
+          return refuse("backslash в двойных кавычках (эскейп не поддерживается)", false);
+        if (inner === "$") return refuse("$ в двойных кавычках (подстановка shell)", false);
+        if (inner === "`") return refuse("backtick в двойных кавычках", false);
         if (inner === '"') {
           closed = true;
           i += 1;
           break;
         }
-        current += inner;
+        value += inner;
         i += 1;
       }
-      if (!closed) return refuse("незакрытая двойная кавычка");
+      if (!closed) return refuse("незакрытая двойная кавычка", false);
       haveToken = true;
       continue;
     }
-    if (ch === "\n" || ch === "\r")
-      return refuse("перевод строки вне кавычек (разделитель команд)");
-    if (/\s/.test(ch)) {
-      if (haveToken) {
-        argv.push(current);
-        current = "";
-        haveToken = false;
-      }
+    if (ch === "\n" || ch === "\r") {
+      return refuse("перевод строки вне кавычек (разделитель команд)", true);
+    }
+    if (ch === " " || ch === "\t") {
+      endToken();
       i += 1;
       continue;
     }
-    if (";|&()<>`$".includes(ch)) {
-      return refuse(`метасимвол ${JSON.stringify(ch)} вне кавычек`);
+    if (ch === "#") return refuse(HASH_REASON, false);
+    if (WORD_ENDING_METACHARS.includes(ch)) {
+      return refuse(`метасимвол ${JSON.stringify(ch)} вне кавычек`, true);
     }
-    if (ch === "\\") return refuse("backslash вне кавычек (экранирование не поддерживается)");
-    current += ch;
+    if (SUBSTITUTION_CHARS.includes(ch)) {
+      return refuse(`метасимвол ${JSON.stringify(ch)} вне кавычек`, false);
+    }
+    if (ch === "\\")
+      return refuse("backslash вне кавычек (экранирование не поддерживается)", false);
+    if (expansion === undefined && EXPANSION_CHARS.includes(ch)) expansion = ch;
+    value += ch;
     haveToken = true;
     i += 1;
   }
-  if (haveToken) argv.push(current);
-  if (argv.length === 0) return refuse("пустая команда");
-  if (argv[0] !== "perl") return refuse("первый токен не perl");
+  endToken();
+  return { ok: true, tokens };
+}
+
+/**
+ * The single-perl-invocation classifier (design §6.1): exactly one `perl` call
+ * as the FIRST word, POSIX-like quoting, no shell interpreter in the chain.
+ * Conservative by construction (TD-07): every refusal of the shared tokenizer
+ * applies (§6.1.2, §6.1.3), and the first word must be exactly `perl`
+ * (`perl5`, `/usr/bin/perl`, `env perl` all refuse; FR-005). Unquoted
+ * expansion characters are NOT refused for perl (§6.1.7, accepted divergence).
+ */
+export function isSinglePerlInvocation(command: string): PerlVerdict {
+  const tokenized = tokenizeShellCommand(command);
+  if (!tokenized.ok) return { ok: false, reason: tokenized.reason };
+  const first = tokenized.tokens[0];
+  if (first === undefined) return { ok: false, reason: "пустая команда" };
+  if (first.value !== "perl") return { ok: false, reason: "первый токен не perl" };
   return { ok: true };
+}
+
+/** The bd subcommands the lead may run (design §6.5.2). */
+export const BD_SUBCOMMANDS: readonly string[] = [
+  "create",
+  "show",
+  "list",
+  "ready",
+  "update",
+  "close",
+];
+
+/**
+ * The single-bd-invocation classifier (design §6.5.2). On top of the shared
+ * tokenizer: argv[0] is exactly `bd`; argv[1] is exactly one subcommand from
+ * BD_SUBCOMMANDS (case-sensitive, quotes removed; a flag before it refuses);
+ * and no token carries an unquoted expansion character. Arguments after the
+ * subcommand are not interpreted further (§6.5.4).
+ */
+export function isSingleBdInvocation(command: string): BdVerdict {
+  const tokenized = tokenizeShellCommand(command);
+  if (!tokenized.ok) return { ok: false, reason: tokenized.reason };
+  const [head, subcommand] = tokenized.tokens;
+  if (head === undefined) return { ok: false, reason: "пустая команда" };
+  if (head.value !== "bd") return { ok: false, reason: "первый токен не bd" };
+  if (subcommand === undefined || !BD_SUBCOMMANDS.includes(subcommand.value)) {
+    return {
+      ok: false,
+      reason: "argv[1] — не подкоманда из списка create/show/list/ready/update/close",
+    };
+  }
+  for (const token of tokenized.tokens) {
+    if (token.expansion !== undefined) {
+      return {
+        ok: false,
+        reason: `неквотированный символ раскрытия оболочки ${JSON.stringify(token.expansion)}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** The bash branch the gate takes (design §6.5.1): perl, bd, or neither. */
+export type BashClassification =
+  | { branch: "perl"; verdict: PerlVerdict }
+  | { branch: "bd"; verdict: BdVerdict }
+  | { branch: "other"; reason: string };
+
+/**
+ * Chooses the branch by the first word with quotes removed (design §6.5.1).
+ * The word is argv[0] when the line tokenizes; otherwise the first word read
+ * completely before the tokenizer's error. Neither perl nor bd: the merged
+ * formula, whose reason is the tokenizer's when the first word is not read.
+ */
+export function classifyBashCommand(command: string): BashClassification {
+  const tokenized = tokenizeShellCommand(command);
+  const word = tokenized.ok ? tokenized.tokens[0]?.value : tokenized.firstWord;
+  if (word === "perl") return { branch: "perl", verdict: isSinglePerlInvocation(command) };
+  if (word === "bd") return { branch: "bd", verdict: isSingleBdInvocation(command) };
+  if (word !== undefined) return { branch: "other", reason: "первый токен не perl и не bd" };
+  return { branch: "other", reason: tokenized.ok ? "пустая команда" : tokenized.reason };
 }

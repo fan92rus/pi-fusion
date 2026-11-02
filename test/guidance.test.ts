@@ -92,9 +92,26 @@ describe("fusion guidance section", () => {
     expect(section).toContain("realpath target of the project's `openspec/`");
     expect(section).toContain("a verifiable boundary, not a sandbox");
     expect(section).toContain("ONLY a single `perl` invocation");
-    expect(section).toContain("pass the perl program in single quotes");
+    expect(section).toContain("Pass the perl program in single quotes");
     expect(section).toContain("trust, not a sandbox");
     expect(section).toContain("`powershell` is blocked by default");
+  });
+
+  it("states the single-bd bash exception, its frame and that workers keep out of the tracker (design §7, §6.5)", () => {
+    const section = buildFusionSection(twoModels);
+    expect(section).toContain(
+      "OR ONLY a single `bd` command whose subcommand is `create`, `show`, `list`, `ready`, `update` or `close`",
+    );
+    expect(section).toContain("you alone keep the task tracker; workers never touch it");
+    expect(section).toContain("trust, not a sandbox, and not a check of bd permissions");
+  });
+
+  it("tells the lead to quote bd arguments with glob, brace, tilde, comment and history characters (design §6.1.7, §6.1.3)", () => {
+    const section = buildFusionSection(twoModels);
+    expect(section).toContain(
+      "Quote every bd argument that contains `*`, `?`, `[`, `]`, `{`, `}`, `~`, `#` or `!`",
+    );
+    expect(section).toContain("an unquoted `#` in perl or bd");
   });
 
   it("states the machine facts: rotation, width ceiling and timeout", () => {

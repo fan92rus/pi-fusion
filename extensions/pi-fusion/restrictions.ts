@@ -24,10 +24,11 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir as osHomedir } from "node:os";
+import { posix, win32 } from "node:path";
 import type { ExtensionAPI, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { Value } from "@sinclair/typebox/value";
-import { isPathInsideOpenSpecTarget, isSinglePerlInvocation } from "./lead-access.ts";
+import { classifyBashCommand, isPathInsideOpenSpecTarget } from "./lead-access.ts";
 import { type FanoutResult, FanoutResultSchema, type TaskResult } from "./types.ts";
 
 /** The fan-out tool name (index.ts FUSION_TOOL_NAME; not imported, to keep this module free of index.ts). */
@@ -134,87 +135,256 @@ export interface LeadRestrictionOptions {
    */
   projectRoot?: () => string;
   /**
-   * The pi agent dir holding settings.json; defaults to PI_CODING_AGENT_DIR
-   * (or ~/.pi/agent) — the same resolution the config bridge uses.
+   * Override of the agent dir whose settings.json the shell-settings gate reads
+   * (the global file, design §6.6). When set, it replaces the replica of the
+   * host's getAgentDir(); the other shell-settings seams stay system ones.
+   * Default: the replica of the host resolution (PI_CODING_AGENT_DIR, else
+   * homedir()/.pi/agent). config.ts (fusion.json path) is NOT this resolution.
    */
   agentDir?: () => string;
+  /**
+   * Hermetic seam for the shell-settings gate (design §6.6): the env map,
+   * homedir(), the platform name and readFile(path). Default: the system ones.
+   */
+  shellSettingsContext?: () => ShellSettingsContext;
 }
 
 function isMainProcess(): boolean {
   return process.env.PI_SUBAGENT_CHILD !== "1";
 }
 
-function defaultAgentDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const configured = process.env.PI_CODING_AGENT_DIR;
-  // Expand ~ exactly like config.ts resolveAgentDir (review blocker: a
-  // literal ~ path made the settings read ENOENT, which read as "stock
-  // install" and left the perl exception ON under a custom shellPath).
-  if (configured === "~") return home;
-  if (configured !== undefined && (configured.startsWith("~/") || configured.startsWith("~\\"))) {
-    return join(home, configured.slice(2));
+/** The env map, homedir(), platform name and readFile the shell-settings gate reads through (design §6.6). */
+export interface ShellSettingsContext {
+  env: Readonly<Record<string, string | undefined>>;
+  homedir: () => string;
+  platform: string;
+  readFile: (path: string) => string;
+}
+
+/** The production seams: the live process env, os.homedir(), process.platform, readFileSync. */
+export function systemShellSettingsContext(): ShellSettingsContext {
+  return {
+    env: process.env,
+    homedir: osHomedir,
+    platform: process.platform,
+    readFile: (path) => readFileSync(path, "utf8"),
+  };
+}
+
+/** The path module of the platform the seams describe (win32 or POSIX). */
+function pathFor(platform: string) {
+  return platform === "win32" ? win32 : posix;
+}
+
+type PathModule = typeof posix;
+
+/** The host's homedir(), or `undefined` when it throws or is empty / not absolute (design §6.6 rule 3). */
+function usableHomedir(homedir: () => string, p: PathModule): string | undefined {
+  let home: unknown;
+  try {
+    home = homedir();
+  } catch {
+    return undefined;
   }
-  if (configured !== undefined && configured.length > 0) return configured;
-  return home.length > 0 ? join(home, ".pi", "agent") : ".pi/agent";
+  return typeof home === "string" && home.length > 0 && p.isAbsolute(home) ? home : undefined;
+}
+
+/** The host's win32 `/c/…` → `C:\…` form (normalizeWindowsShellPath, pi-coding-agent); other inputs pass through. */
+function normalizeWindowsShellPath(filePath: string): string {
+  if (!filePath.startsWith("/") || filePath.startsWith("//") || filePath.includes("\\")) {
+    return filePath;
+  }
+  const match = filePath.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+  if (!match) return filePath;
+  const suffix = match[2]?.replace(/\//g, "\\");
+  return `${(match[1] ?? "").toUpperCase()}:\\${suffix ?? ""}`;
 }
 
 /**
- * Whether the host bash tool runs a CUSTOM shell (design §6.1.5): any
- * configured `shellPath` in settings.json means POSIX-quoting parity is
- * unproven, so the perl exception is OFF — and an unreadable settings file
- * fails closed the same way. An empty string counts as not configured
- * (settings-manager normalizes the value only when truthy).
+ * A local `file://` URL as a path (the host's fileURLToPath). A host part
+ * (UNC or remote) is not derived here: `undefined`, which fails closed.
  */
-/**
- * Whether ONE settings file signals a non-default shell for the bash tool
- * (design §6.1.5): a configured `shellPath` means POSIX-quoting parity is
- * unproven; a configured `shellCommandPrefix` means the executed command is
- * not the classified string — either way the perl exception is OFF. Any
- * truthy non-string `shellPath` also counts as configured (fail-closed;
- * the host truthy-checks the value before normalizing). A missing file is
- * the stock install (not configured); corrupt/unreadable fails closed.
- */
-function settingsDisablesPerlException(path: string): boolean {
+function fileUrlToPath(url: string, platform: string): string | undefined {
+  let parsed: URL;
   try {
-    const raw = readFileSync(path, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return true; // fail closed
-    const record = parsed as Record<string, unknown>;
-    const shellPath = record.shellPath;
-    const customShell =
-      shellPath === undefined || shellPath === null
-        ? false
-        : typeof shellPath === "string"
-          ? shellPath.trim().length > 0
-          : Boolean(shellPath);
-    const prefix = record.shellCommandPrefix;
-    const prefixSet =
-      prefix !== undefined &&
-      prefix !== null &&
-      (!(typeof prefix === "string") || prefix.trim().length > 0);
-    return customShell || prefixSet;
-  } catch (error) {
-    // A MISSING file is the stock install — the host's own POSIX shell, no
-    // custom shellPath. Everything else (corrupt JSON, unreadable) fails
-    // closed: the exception stays off (§6.1.5).
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    return true;
+    parsed = new URL(url);
+  } catch {
+    return undefined;
   }
+  if (parsed.hostname !== "") return undefined;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(parsed.pathname);
+  } catch {
+    return undefined;
+  }
+  return platform === "win32"
+    ? decoded.replace(/^\/([a-zA-Z]:)/, "$1").replace(/\//g, "\\")
+    : decoded;
+}
+
+/**
+ * The agent dir that holds the global settings.json: a replica of the host's
+ * `getAgentDir()` (design §6.6 rule 1; pi-coding-agent chunk-BSS6T6KQ). Only
+ * `PI_CODING_AGENT_DIR` decides; `HOME` and `USERPROFILE` never do. A relative
+ * value stays relative, as on the host. `undefined` = the directory cannot be
+ * derived (rule 3, fail-closed).
+ */
+export function resolveHostAgentDir(
+  env: Readonly<Record<string, string | undefined>>,
+  homedir: () => string,
+  platform: string,
+): string | undefined {
+  const p = pathFor(platform);
+  const configured = env.PI_CODING_AGENT_DIR;
+  if (configured === undefined || configured === "") {
+    const home = usableHomedir(homedir, p);
+    return home === undefined ? undefined : p.join(home, ".pi", "agent");
+  }
+  // The host's order (normalizePath): the win32 /c/… form, then ~, then file://.
+  const value = platform === "win32" ? normalizeWindowsShellPath(configured) : configured;
+  if (value.startsWith("~")) {
+    const home = usableHomedir(homedir, p);
+    if (home === undefined) return undefined;
+    if (value === "~") return home;
+    if (value.startsWith("~/") || (platform === "win32" && value.startsWith("~\\"))) {
+      return p.join(home, value.slice(2));
+    }
+    // "~user" is literal on the host (only ~ and ~/ expand); the check above is conservative.
+  }
+  if (/^file:\/\//.test(value)) return fileUrlToPath(value, platform);
+  return value;
+}
+
+/**
+ * What the shell settings say about the bash tool (design §6.1.5, §6.6, §6.7):
+ * `stock` = the host's own POSIX shell; `custom` = a shellPath or a
+ * shellCommandPrefix is configured; `unreadable` = a settings file could not be
+ * read or parsed; `unresolvable` = the agent dir cannot be derived. The last
+ * three disable the perl and bd exceptions (fail-closed).
+ */
+export type ShellSettingsVerdict = "stock" | "custom" | "unreadable" | "unresolvable";
+
+/** The inputs of one shell-settings check; `replicaDir` = the agentDir override, when given. */
+export interface ShellSettingsInput extends ShellSettingsContext {
+  projectRoot: string;
+  replicaDir?: string;
+}
+
+/**
+ * ONE settings file (design §6.1.5). A missing file is the stock install (or
+ * "not configured" for a HOME candidate). A configured `shellPath` (any truthy
+ * non-string counts too: the host truthy-checks it before normalizing) or a
+ * configured `shellCommandPrefix` means custom. Corrupt JSON, a non-object, or
+ * any other read error is unreadable.
+ */
+function readShellSettings(path: string, readFile: (path: string) => string): ShellSettingsVerdict {
+  let raw: string;
+  try {
+    raw = readFile(path);
+  } catch (error) {
+    return (error as { code?: unknown } | null)?.code === "ENOENT" ? "stock" : "unreadable";
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "unreadable";
+  }
+  if (typeof parsed !== "object" || parsed === null) return "unreadable";
+  const record = parsed as Record<string, unknown>;
+  // The host truthy-checks shellPath (settings-manager getShellPath): any non-empty
+  // value counts, whitespace included, so there is no trim here.
+  const customShell = Boolean(record.shellPath);
+  const prefix = record.shellCommandPrefix;
+  const prefixSet =
+    prefix !== undefined &&
+    prefix !== null &&
+    (!(typeof prefix === "string") || prefix.trim().length > 0);
+  return customShell || prefixSet ? "custom" : "stock";
+}
+
+/**
+ * The HOME and USERPROFILE candidates (design §6.6 rule 3(в)): each non-empty
+ * value that differs from homedir() after normalization. They are extra checks
+ * only: an extra file the host never reads can only disable the exception.
+ */
+function homeCandidateDirs(
+  env: Readonly<Record<string, string | undefined>>,
+  homedir: () => string,
+  platform: string,
+): string[] {
+  const p = pathFor(platform);
+  const fold = (path: string) => (platform === "win32" ? path.toLowerCase() : path);
+  const home = usableHomedir(homedir, p);
+  const homeKey = home === undefined ? undefined : fold(p.normalize(home));
+  const dirs = new Map<string, string>();
+  for (const name of ["HOME", "USERPROFILE"] as const) {
+    const raw = env[name];
+    if (raw === undefined || raw === "") continue;
+    const dir = p.normalize(raw);
+    if (fold(dir) === homeKey) continue;
+    dirs.set(fold(dir), dir);
+  }
+  return [...dirs.values()];
+}
+
+/**
+ * Reads every settings file the host can merge for the bash tool (global
+ * replica, project `projectRoot/.pi/settings.json`, HOME/USERPROFILE
+ * candidates). Any file that configures a shell wins; then any unreadable
+ * file; then an unresolvable agent dir; otherwise stock. Only a stock verdict
+ * keeps the exception.
+ */
+export function shellSettingsVerdict(input: ShellSettingsInput): ShellSettingsVerdict {
+  const p = pathFor(input.platform);
+  const replica = input.replicaDir ?? resolveHostAgentDir(input.env, input.homedir, input.platform);
+  const files = new Set<string>();
+  if (replica !== undefined) files.add(p.join(replica, "settings.json"));
+  files.add(p.join(input.projectRoot, ".pi", "settings.json"));
+  for (const dir of homeCandidateDirs(input.env, input.homedir, input.platform)) {
+    files.add(p.join(dir, ".pi", "agent", "settings.json"));
+  }
+  let unreadable = false;
+  for (const file of files) {
+    const verdict = readShellSettings(file, input.readFile);
+    if (verdict === "custom") return "custom";
+    if (verdict === "unreadable") unreadable = true;
+  }
+  if (unreadable) return "unreadable";
+  return replica === undefined ? "unresolvable" : "stock";
 }
 
 /**
  * The host bash tool runs a CUSTOM shell when `shellPath` (or a
- * `shellCommandPrefix`) is set in the MERGED settings — global
- * (agentDir/settings.json) OR project (projectRoot/.pi/settings.json,
- * settings-manager.js:220 deepMerge). Either file disables the perl
- * exception (§6.1.5); in pwsh `;` separates commands, so the classified
- * "single call" would be a lie about the executed command.
+ * `shellCommandPrefix`) is set in the MERGED settings — global OR project
+ * (settings-manager.js:220 deepMerge). Either file disables the perl exception
+ * (§6.1.5); in pwsh `;` separates commands, so the classified "single call"
+ * would be a lie about the executed command.
  */
-function hostShellCustomized(agentDir: string, projectRoot: string): boolean {
-  return (
-    settingsDisablesPerlException(join(agentDir, "settings.json")) ||
-    settingsDisablesPerlException(join(projectRoot, ".pi", "settings.json"))
-  );
+export function hostShellCustomized(
+  env: Readonly<Record<string, string | undefined>>,
+  homedir: () => string,
+  platform: string,
+  readFile: (path: string) => string,
+  projectRoot: string,
+): boolean {
+  return shellSettingsVerdict({ env, homedir, platform, readFile, projectRoot }) !== "stock";
+}
+
+/** The cause of each disabling verdict (design §6.7); the exception name follows it per branch. */
+const SHELL_CAUSE: Record<Exclude<ShellSettingsVerdict, "stock">, string> = {
+  custom: "оболочка не POSIX-совместима (задан shellPath или префикс)",
+  unreadable: "настройки оболочки нечитаемы или не разобраны",
+  unresolvable: "каталог настроек агента не определяется",
+};
+
+/** The refusal reason when a disabling verdict meets a classified branch (design §6.5.3, §6.7): perl and bd texts are separate. */
+function shellRefusal(
+  branch: "perl" | "bd",
+  verdict: Exclude<ShellSettingsVerdict, "stock">,
+): string {
+  return `${SHELL_CAUSE[verdict]} — исключение ${branch} отключено`;
 }
 
 /** The exception-aware decision for one blocked tool call (design §5.1, §6.1). */
@@ -223,7 +393,7 @@ function gateDecision(
   input: unknown,
   state: LeadRestrictionState,
   projectRoot: string,
-  agentDir: string,
+  shellVerdict: () => ShellSettingsVerdict,
 ): ToolCallEventResult | undefined {
   const block = (reason: string): ToolCallEventResult => ({ block: true, reason });
 
@@ -255,21 +425,28 @@ function gateDecision(
         : undefined;
     if (command === undefined) {
       return block(
-        `${refusalText(toolName, state)} Причина исключения: у вызова нет команды — исключение perl не применяется`,
+        `${refusalText(toolName, state)} Причина исключения: у вызова нет команды — исключения perl и bd не применяются`,
       );
     }
-    const verdict = isSinglePerlInvocation(command);
-    if (!verdict.ok) {
+    const classified = classifyBashCommand(command);
+    if (classified.branch === "other") {
       return block(
-        `${refusalText(toolName, state)} Причина исключения: не одиночный вызов perl — ${verdict.reason}`,
+        `${refusalText(toolName, state)} Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — ${classified.reason}`,
       );
     }
-    if (hostShellCustomized(agentDir, projectRoot)) {
+    if (!classified.verdict.ok) {
       return block(
-        `${refusalText(toolName, state)} Причина исключения: оболочка не POSIX-совместима (задан shellPath или префикс) — исключение perl отключено`,
+        `${refusalText(toolName, state)} Причина исключения: не одиночный вызов ${classified.branch} — ${classified.verdict.reason}`,
       );
     }
-    return undefined; // exactly one perl call under the host's own POSIX shell (§6.1)
+    const shell = shellVerdict();
+    if (shell !== "stock") {
+      return block(
+        `${refusalText(toolName, state)} Причина исключения: ${shellRefusal(classified.branch, shell)}`,
+      );
+    }
+    // exactly one perl or bd call under the host's own POSIX shell (§6.1, §6.5)
+    return undefined;
   }
 
   // powershell and anything else on the block list: no exception applies.
@@ -280,6 +457,24 @@ function gateDecision(
 export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrictionOptions): void {
   const blocked = new Set<string>(options.blockedTools ?? LEAD_BLOCKED_TOOLS);
   const isLeadSession = options.isLeadSession ?? isMainProcess;
+  const projectRootOf = (ctx: { cwd?: string } | undefined): string =>
+    (options.projectRoot ?? (() => ctx?.cwd ?? process.cwd()))();
+  const liveShellVerdict = (projectRoot: string): ShellSettingsVerdict =>
+    shellSettingsVerdict({
+      ...(options.shellSettingsContext ?? systemShellSettingsContext)(),
+      projectRoot,
+      ...(options.agentDir === undefined ? {} : { replicaDir: options.agentDir() }),
+    });
+  // The shell verdict is a snapshot taken at the lifecycle boundaries: here
+  // (extension load, a child worker reads nothing) and at every session_start
+  // (new, resume, fork, reload). The host captures its shellPath and
+  // commandPrefix once, when it builds the runtime, so the gate must not
+  // follow a later edit of the files. A snapshot that is not stock holds until
+  // the next session_start, whatever the disk says then. This narrows the gap
+  // to the host's own capture moment; it does not remove it (no TOCTOU claim).
+  let pinnedShell: ShellSettingsVerdict = isLeadSession()
+    ? liveShellVerdict(projectRootOf(undefined))
+    : "stock";
   let state = emptyLeadRestrictionState();
 
   // One user-initiated run = one agent_start..agent_end scope (the
@@ -289,6 +484,10 @@ export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrict
   // sees it (orchestrator decision, bd pi-fusion-du1).
   pi.on("agent_start", () => {
     state = emptyLeadRestrictionState();
+  });
+
+  pi.on("session_start", (_event, ctx) => {
+    pinnedShell = isLeadSession() ? liveShellVerdict(projectRootOf(ctx)) : "stock";
   });
 
   pi.on("tool_result", (event) => {
@@ -301,12 +500,11 @@ export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrict
   pi.on("tool_call", (event, ctx): ToolCallEventResult | undefined => {
     if (!blocked.has(event.toolName)) return undefined;
     if (!options.isEnabled() || !isLeadSession()) return undefined;
-    return gateDecision(
-      event.toolName,
-      event.input,
-      state,
-      (options.projectRoot ?? (() => ctx?.cwd ?? process.cwd()))(),
-      (options.agentDir ?? defaultAgentDir)(),
+    const projectRoot = projectRootOf(ctx);
+    // Fail-closed: a non-stock snapshot wins over the live read; the live read
+    // only matters when the snapshot is stock (the stock -> custom path).
+    return gateDecision(event.toolName, event.input, state, projectRoot, () =>
+      pinnedShell !== "stock" ? pinnedShell : liveShellVerdict(projectRoot),
     );
   });
 }

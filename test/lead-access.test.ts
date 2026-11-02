@@ -3,11 +3,290 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  classifyBashCommand,
   isPathInsideOpenSpecTarget,
+  isSingleBdInvocation,
   isSinglePerlInvocation,
   normalizeLeadPath,
   type OpenSpecBoundaryResult,
+  tokenizeShellCommand,
 } from "../extensions/pi-fusion/lead-access.ts";
+
+/* ------------------------------------------------------------------ */
+/* Shared tokenizer and bd classifier (design §6.1, §6.1.7, §6.5; 8.6)  */
+/* ------------------------------------------------------------------ */
+
+const SUBCOMMAND_REASON = "argv[1] — не подкоманда из списка create/show/list/ready/update/close";
+const UNIFIED_REASON = "первый токен не perl и не bd";
+const HASH_REASON = 'неквотированный "#" вне кавычек (комментарий оболочки)';
+
+/** The gate's view of one bash command: the branch it takes, and its verdict or refusal reason. */
+function bashOf(command: string): { branch: string; ok: boolean; reason?: string } {
+  const classified = classifyBashCommand(command);
+  if (classified.branch === "other")
+    return { branch: "other", ok: false, reason: classified.reason };
+  return classified.verdict.ok
+    ? { branch: classified.branch, ok: true }
+    : { branch: classified.branch, ok: false, reason: classified.verdict.reason };
+}
+
+describe("tokenizeShellCommand (design §6.1, §6.1.7, §6.5.2)", () => {
+  it("splits on space and tab only; \\v, \\f and NBSP are ordinary word characters", () => {
+    expect(tokenizeShellCommand("a \t b")).toEqual({
+      ok: true,
+      tokens: [{ value: "a" }, { value: "b" }],
+    });
+    expect(tokenizeShellCommand("a\vb")).toEqual({ ok: true, tokens: [{ value: "a\vb" }] });
+    expect(tokenizeShellCommand("a\fb")).toEqual({ ok: true, tokens: [{ value: "a\fb" }] });
+    expect(tokenizeShellCommand("a\u00A0b")).toEqual({ ok: true, tokens: [{ value: "a\u00A0b" }] });
+  });
+
+  it("keeps quoted text literal, newlines inside single quotes included", () => {
+    expect(tokenizeShellCommand("bd create 'x\ny'")).toEqual({
+      ok: true,
+      tokens: [{ value: "bd" }, { value: "create" }, { value: "x\ny" }],
+    });
+  });
+
+  it("flags only UNQUOTED expansion characters, per token", () => {
+    expect(tokenizeShellCommand(`bd create '*' "~" x*`)).toEqual({
+      ok: true,
+      tokens: [
+        { value: "bd" },
+        { value: "create" },
+        { value: "*" },
+        { value: "~" },
+        { value: "x*", expansion: "*" },
+      ],
+    });
+  });
+
+  it("reports the first word only when it was read fully before the error", () => {
+    expect(tokenizeShellCommand("bd list; rm")).toEqual({
+      ok: false,
+      reason: 'метасимвол ";" вне кавычек',
+      firstWord: "bd",
+    });
+    expect(tokenizeShellCommand("perl -e 'x' # note")).toEqual({
+      ok: false,
+      reason: HASH_REASON,
+      firstWord: "perl",
+    });
+    expect(tokenizeShellCommand("perl#x")).toEqual({ ok: false, reason: HASH_REASON });
+    expect(tokenizeShellCommand('bd"x')).toEqual({
+      ok: false,
+      reason: "незакрытая двойная кавычка",
+    });
+    expect(tokenizeShellCommand("'bd")).toEqual({
+      ok: false,
+      reason: "незакрытая одинарная кавычка",
+    });
+  });
+});
+
+describe("isSingleBdInvocation (design §6.5.2, §6.5.6; tasks 8.6)", () => {
+  it.each([
+    "bd create 'Задача: сделать X'",
+    "bd ready",
+    "bd list",
+    "bd show pi-fusion-8t2",
+    "bd update pi-fusion-8t2 --claim",
+    "bd close pi-fusion-8t2",
+    "  bd   list  ",
+    "bd\tlist",
+    "bd create '*' \"~\"",
+    '"bd" list',
+    "'bd' 'list'",
+    'bd "list"',
+    "bd create 'line one\nline two'",
+    "bd create 'a#b'",
+    'bd create "a#b"',
+    "bd create '[x]' '{y}' '!z'",
+  ])("allows %j", (command) => {
+    expect(isSingleBdInvocation(command)).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["bd", SUBCOMMAND_REASON],
+    ["bd init", SUBCOMMAND_REASON],
+    ["bd dolt push", SUBCOMMAND_REASON],
+    ["bd remember 'x'", SUBCOMMAND_REASON],
+    ["bd prime", SUBCOMMAND_REASON],
+    ["bd --json list", SUBCOMMAND_REASON],
+    ["bd -p list", SUBCOMMAND_REASON],
+    ["bd --help ready", SUBCOMMAND_REASON],
+    ["bd LIST", SUBCOMMAND_REASON],
+    ["bd Create x", SUBCOMMAND_REASON],
+    ['bd ""', SUBCOMMAND_REASON],
+    ["bd create x; bd list", 'метасимвол ";" вне кавычек'],
+    ["bd list | wc", 'метасимвол "|" вне кавычек'],
+    ["bd list > /tmp/out", 'метасимвол ">" вне кавычек'],
+    ["bd list &", 'метасимвол "&" вне кавычек'],
+    ["bd 'unclosed", "незакрытая одинарная кавычка"],
+    ['bd "list', "незакрытая двойная кавычка"],
+    ['bd "x\\" " ; bd list', "backslash в двойных кавычках (эскейп не поддерживается)"],
+    ["bd list *", 'неквотированный символ раскрытия оболочки "*"'],
+    ["bd show ~", 'неквотированный символ раскрытия оболочки "~"'],
+    ["bd list {a,b}", 'неквотированный символ раскрытия оболочки "{"'],
+    ["bd list }", 'неквотированный символ раскрытия оболочки "}"'],
+    ["bd list [a]", 'неквотированный символ раскрытия оболочки "["'],
+    ["bd list x?", 'неквотированный символ раскрытия оболочки "?"'],
+    ["bd list hi!", 'неквотированный символ раскрытия оболочки "!"'],
+    ["bd create x*y", 'неквотированный символ раскрытия оболочки "*"'],
+    ["bd list #x", HASH_REASON],
+    ["bd list x # note", HASH_REASON],
+  ])("refuses %j", (command, reason) => {
+    expect(isSingleBdInvocation(command)).toEqual({ ok: false, reason });
+  });
+
+  it("names the first found expansion character, left to right", () => {
+    expect(isSingleBdInvocation("bd list x[ {")).toEqual({
+      ok: false,
+      reason: 'неквотированный символ раскрытия оболочки "["',
+    });
+  });
+});
+
+describe("the unquoted # is refused for perl and bd alike (B-NEW, design §6.1.3)", () => {
+  // bash: an unquoted # starts a comment, so the next line is a second command.
+  // A quote-flipping scanner reads the ' inside that comment as an opening quote
+  // and hides the line break and the command after it.
+  const EXPLOIT_PERL = "perl -e 'print 1' #'\nprintf MARKER\n#'";
+  const EXPLOIT_BD = "bd list #'\nprintf MARKER\n#'";
+
+  it("refuses the exploit line for perl and bd", () => {
+    expect(isSinglePerlInvocation(EXPLOIT_PERL)).toEqual({ ok: false, reason: HASH_REASON });
+    expect(isSingleBdInvocation(EXPLOIT_BD)).toEqual({ ok: false, reason: HASH_REASON });
+  });
+
+  it("refuses a trailing comment after a valid call", () => {
+    expect(isSinglePerlInvocation("perl -e 'x' # note")).toEqual({
+      ok: false,
+      reason: HASH_REASON,
+    });
+    expect(isSingleBdInvocation("bd list x # note")).toEqual({ ok: false, reason: HASH_REASON });
+  });
+
+  it("allows a quoted # as a literal in both branches", () => {
+    expect(isSinglePerlInvocation("perl 'x#y'")).toEqual({ ok: true });
+    expect(isSingleBdInvocation("bd create 'a#b'")).toEqual({ ok: true });
+    expect(isSingleBdInvocation('bd create "a#b"')).toEqual({ ok: true });
+  });
+});
+
+describe("whitespace separators (design §6.1.7; tasks 8.6)", () => {
+  it("\\v, \\f and NBSP between words are not separators: the first word is not perl or bd", () => {
+    expect(isSinglePerlInvocation("perl\v-e 'x'")).toEqual({
+      ok: false,
+      reason: "первый токен не perl",
+    });
+    expect(isSinglePerlInvocation("perl\u00A0-e 'x'")).toEqual({
+      ok: false,
+      reason: "первый токен не perl",
+    });
+    expect(bashOf("bd\vlist")).toEqual({ branch: "other", ok: false, reason: UNIFIED_REASON });
+    expect(bashOf("bd\u00A0list")).toEqual({ branch: "other", ok: false, reason: UNIFIED_REASON });
+  });
+
+  it("no trim: a leading \\v or a leading newline refuses", () => {
+    expect(isSinglePerlInvocation("\vperl -e 'x'")).toEqual({
+      ok: false,
+      reason: "первый токен не perl",
+    });
+    expect(bashOf("\vbd list")).toEqual({ branch: "other", ok: false, reason: UNIFIED_REASON });
+    expect(isSinglePerlInvocation("\nperl -e 'x'").ok).toBe(false);
+  });
+
+  it("a trailing newline is no longer trimmed away: it refuses as a line break outside quotes", () => {
+    expect(isSinglePerlInvocation("perl -e 'x'\n")).toEqual({
+      ok: false,
+      reason: "перевод строки вне кавычек (разделитель команд)",
+    });
+    expect(isSinglePerlInvocation("perl -e 'x'\r")).toEqual({
+      ok: false,
+      reason: "перевод строки вне кавычек (разделитель команд)",
+    });
+  });
+
+  it("space and tab separate words, in any count", () => {
+    expect(isSinglePerlInvocation("perl\t-e\t'x'")).toEqual({ ok: true });
+    expect(isSinglePerlInvocation(" \tperl \t -e 'x'\t ")).toEqual({ ok: true });
+    expect(isSingleBdInvocation("bd\t\tlist")).toEqual({ ok: true });
+  });
+
+  it("a whitespace-only command and an empty command are both empty", () => {
+    expect(isSinglePerlInvocation("\t \t")).toEqual({ ok: false, reason: "пустая команда" });
+    expect(bashOf("   ")).toEqual({ branch: "other", ok: false, reason: "пустая команда" });
+    expect(bashOf("")).toEqual({ branch: "other", ok: false, reason: "пустая команда" });
+  });
+
+  it("a multi-line quoted argument does not split the command (design §6.1 п. 3)", () => {
+    expect(isSingleBdInvocation("bd create 'line one\nline two'")).toEqual({ ok: true });
+    expect(isSinglePerlInvocation("perl -e 'print 1;\nprint 2'")).toEqual({ ok: true });
+  });
+});
+
+describe("the first word decides the branch (design §6.5.1; tasks 8.6)", () => {
+  it.each([
+    // argv[0] after unquoting: the same command as the plain form
+    ['"bd" list', "bd", true],
+    ["'bd' 'list'", "bd", true],
+    ["'perl' -e 'x'", "perl", true],
+    // the perl branch keeps its text: the reason is the tokenizer's
+    ['"perl" -e x && make', "perl", false, 'метасимвол "&" вне кавычек'],
+    ["perl -e 'x' && make", "perl", false, 'метасимвол "&" вне кавычек'],
+    ["perl -e 'x' # note", "perl", false, HASH_REASON],
+    // the bd branch: the tokenizer, then argv[1], then expansions
+    ["bd 'unclosed", "bd", false, "незакрытая одинарная кавычка"],
+    ["bd list #x", "bd", false, HASH_REASON],
+    ["bd create x; bd list", "bd", false, 'метасимвол ";" вне кавычек'],
+    ["bd", "bd", false, SUBCOMMAND_REASON],
+    // not perl and not bd: the merged formula
+    ['"BD" list', "other", false, UNIFIED_REASON],
+    ['"bd"x list', "other", false, UNIFIED_REASON],
+    ['"" list', "other", false, UNIFIED_REASON],
+    ["BD list", "other", false, UNIFIED_REASON],
+    ["bdx list", "other", false, UNIFIED_REASON],
+    ["command bd list", "other", false, UNIFIED_REASON],
+    ["/usr/bin/bd list", "other", false, UNIFIED_REASON],
+    ["echo x && bd list", "other", false, UNIFIED_REASON],
+    ["cat x | perl -e 'y'", "other", false, UNIFIED_REASON],
+    ["ls", "other", false, UNIFIED_REASON],
+    // the first word is not read fully: the tokenizer's reason
+    ["perl#x", "other", false, HASH_REASON],
+    ["'perl", "other", false, "незакрытая одинарная кавычка"],
+  ])("%j → %s", (command: string, branch: string, ok: boolean, reason?: string) => {
+    const expected = reason === undefined ? { branch, ok } : { branch, ok, reason };
+    expect(bashOf(command)).toEqual(expected);
+  });
+
+  it('the empty token "" is a token, not an empty command', () => {
+    expect(bashOf('""')).toEqual({ branch: "other", ok: false, reason: UNIFIED_REASON });
+  });
+});
+
+describe("expansion characters: bd refuses them unquoted, perl keeps its behaviour (design §6.1.7)", () => {
+  it("perl accepts unquoted expansion characters after its one call (accepted divergence)", () => {
+    for (const command of [
+      "perl -e 'x' *",
+      "perl -e 'x' {a,b}",
+      "perl -e 'x' ~",
+      "perl -e 'x' ?",
+      "perl -e 'x' !",
+      "perl -pi -e 's/a/b/' openspec/*.md",
+    ]) {
+      expect(isSinglePerlInvocation(command), command).toEqual({ ok: true });
+    }
+  });
+
+  it("bd: an unquoted expansion character in any token refuses; quoted ones are literals", () => {
+    expect(isSingleBdInvocation("bd create '*' \"~\"")).toEqual({ ok: true });
+    expect(isSingleBdInvocation("bd list *")).toEqual({
+      ok: false,
+      reason: 'неквотированный символ раскрытия оболочки "*"',
+    });
+  });
+});
 
 /* ------------------------------------------------------------------ */
 /* Perl classifier — the §6.4 table                                    */

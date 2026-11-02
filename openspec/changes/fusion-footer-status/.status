@@ -1,0 +1,5 @@
+spec: fusion-footer-status
+state: rev.2 — раунд 1 ревью (run ecfad535, beam-free) НЕ ГОДЕН: blocker TUI-only против RPC-фактов + 2 majors (guard по ctx.mode неоднозначен; seam setStatus отсутствует в FusionCommandDeps) + 2 minors — закрыты: критерий записи = только наличие ctx.ui.setStatus (tui+rpc с UI; print/json — тихий пропуск, ctx.mode не критерий), добавлен design §3a (поле setStatus в FusionCommandDeps + фейки makeDeps/makePi); ждёт контрольного раунда 2 и утверждения 1.2
+next: 1.1 кросс-модельное документное ревью → 1.2 утверждение владельца → 2.1 реализация (TDD) → 3.1 ревью+коммит → 3.2 живая приёмка (после перезапуска) → 3.3 архивация
+epic-bd: (создать при утверждении)
+parent-change: fusion-session-activation (спека rev.4 реализована ae4c14f; изменение НЕ трогает её модель — только отображение)

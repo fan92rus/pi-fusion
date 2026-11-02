@@ -143,6 +143,16 @@ export function isSessionEnabled(sm: SessionActivationSessionManager): boolean {
   return getSessionActivation(sm).enabled;
 }
 
+export function fusionFooterText(
+  sm: SessionActivationSessionManager,
+): "fusion: on" | "fusion: off" {
+  try {
+    return getSessionActivation(sm).enabled ? "fusion: on" : "fusion: off";
+  } catch {
+    return "fusion: off";
+  }
+}
+
 export function applySessionStart(
   pi: SessionActivationPi,
   sm: SessionActivationSessionManager,

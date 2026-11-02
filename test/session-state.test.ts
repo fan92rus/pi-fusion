@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACTIVATION_ENTRY_TYPE,
   applySessionStart,
+  fusionFooterText,
   getSessionActivation,
   isSessionEnabled,
   resetForTests,
@@ -214,5 +215,24 @@ describe("session-state", () => {
     const act = applySessionStart(pi as any, sm as any);
     expect(act).toEqual({ enabled: true, source: "env" });
     resetForTests();
+  });
+});
+
+describe("fusionFooterText", () => {
+  beforeEach(() => resetForTests());
+
+  it("returns fusion: off when disabled", () => {
+    const sm = makeSm("s1");
+    expect(fusionFooterText(sm as any)).toBe("fusion: off");
+  });
+
+  it("returns fusion: on when enabled", () => {
+    const sm = makeSm("s1");
+    const pi = {
+      appendEntry: (t: string, d: unknown) =>
+        sm.getBranch().push({ type: "custom", customType: t, data: d }),
+    };
+    setSessionEnabled(pi as any, sm as any, true);
+    expect(fusionFooterText(sm as any)).toBe("fusion: on");
   });
 });

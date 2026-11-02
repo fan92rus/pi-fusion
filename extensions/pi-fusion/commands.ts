@@ -21,7 +21,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 // command persists whole snapshots, so dropping the approval/tool fields
 // would silently reset them (bd pi-fusion-chq review fix).
 import { FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
-import type { SessionActivation } from "./session-state.ts";
+import { getSessionActivation, type SessionActivation } from "./session-state.ts";
 import type { InstallWorkerAgentResult, RoleProfileStatus } from "./worker-install.ts";
 
 export interface FusionSubcommand {
@@ -120,6 +120,8 @@ export interface FusionCommandDeps {
   setActivation(value: boolean): void;
   /** Thin wrapper over pi.appendEntry for session history writes. */
   appendEntry(type: string, data: unknown): void;
+  /** Footer status slot writer (guarded no-op without UI channel). */
+  setStatus(key: string, text: string): void;
   /** Readonly-ish handle of the current session (id + branch + append). */
   sessionManager: {
     getSessionId(): string;
@@ -211,6 +213,15 @@ export function registerFusionCommand(
   });
 }
 
+/** Footer status text from current session activation. */
+export function fusionFooterText(sm: unknown): "fusion: on" | "fusion: off" {
+  try {
+    return getSessionActivation(sm as any).enabled ? "fusion: on" : "fusion: off";
+  } catch {
+    return "fusion: off";
+  }
+}
+
 // ─── subcommands ───────────────────────────────────────────────────────────
 
 /**
@@ -228,6 +239,7 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
     if (idempotent) {
       if (has) deps.setActiveTools(active.filter((name) => name !== deps.toolName));
       deps.notify("fusion уже выключен в этой сессии");
+      deps.setStatus("fusion", fusionFooterText(deps.sessionManager));
       return;
     }
     deps.setActivation(false);
@@ -235,6 +247,7 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
     deps.notify(
       "fusion: off.\nРешение сохранено в истории этой сессии; восстанавливается при resume/reload; другие сессии не затрагиваются.",
     );
+    deps.setStatus("fusion", fusionFooterText(deps.sessionManager));
     return;
   }
   // Reconcile tool presence (FR-004a): add if missing, even when idempotent.
@@ -257,6 +270,7 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
   deps.notify(
     `fusion: on.\n${lines.join("\n")}\nРешение сохранено в истории этой сессии; восстанавливается при resume/reload; другие сессии не затрагиваются.`,
   );
+  deps.setStatus("fusion", fusionFooterText(deps.sessionManager));
 }
 
 function showStatus(deps: FusionCommandDeps): void {

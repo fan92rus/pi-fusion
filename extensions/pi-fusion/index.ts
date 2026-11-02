@@ -38,6 +38,7 @@ import { isSeamAvailable } from "./seam/availability.ts";
 import { createFanoutSeamClient } from "./seam/client.ts";
 import {
   applySessionStart,
+  fusionFooterText,
   getSessionActivation,
   isSessionEnabled,
   setSessionEnabled,
@@ -57,6 +58,7 @@ import {
 } from "./worker-install.ts";
 
 export const FUSION_TOOL_NAME = "fusion_delegate";
+export { fusionFooterText } from "./session-state.ts";
 
 /** Injection points for tests; production uses the pi agent dir defaults. */
 export interface FusionExtensionOptions {
@@ -243,6 +245,24 @@ export function registerFusionDelegate(
     } else {
       if (!has) pi.setActiveTools([...active, FUSION_TOOL_NAME]);
     }
+    // Footer status slot (fusion-footer-status): after reconcile.
+    const ui = (ctx as { ui?: { setStatus?: (key: string, text: string) => void } } | undefined)
+      ?.ui;
+    if (ui && typeof ui.setStatus === "function") {
+      let text: "fusion: on" | "fusion: off" = "fusion: off";
+      if (sm) {
+        try {
+          text = fusionFooterText(sm as never);
+        } catch {
+          text = "fusion: off";
+        }
+      }
+      try {
+        ui.setStatus("fusion", text);
+      } catch {
+        // silent skip
+      }
+    }
   });
 }
 
@@ -284,6 +304,16 @@ function makeFusionCommandDeps(
     roleProfileStatuses: () => roleProfileStatuses(agentDir === undefined ? {} : { agentDir }),
     installRoleAgents: () => installFusionRoleAgents(agentDir === undefined ? {} : { agentDir }),
     notify: (message, level) => ctx.ui.notify(message, level),
+    setStatus: (key, text) => {
+      const ui = ctx.ui as { setStatus?: (k: string, t: string) => void } | undefined;
+      if (ui && typeof ui.setStatus === "function") {
+        try {
+          ui.setStatus(key, text);
+        } catch {
+          // silent skip
+        }
+      }
+    },
     dialogs,
     interactiveConfig: () => {
       if (!dialogs) return Promise.resolve();

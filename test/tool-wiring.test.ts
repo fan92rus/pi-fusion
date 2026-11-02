@@ -33,6 +33,10 @@ function makePi(initialActive: string[] = ["read", "bash"], branch: any[] = []) 
   const handlers = new Map<string, Array<(payload?: unknown, ctx?: unknown) => void>>();
   let active = [...initialActive];
   const sm = makeSessionManager(branch);
+  const statusCalls: Array<[string, any]> = [];
+  const setStatus = (key: string, text: any) => {
+    statusCalls.push([key, text]);
+  };
   const pi: any = {
     events: createFakePiEvents(),
     appendEntry: (type: string, data: unknown) => sm.appendEntry(type, data),
@@ -51,12 +55,16 @@ function makePi(initialActive: string[] = ["read", "bash"], branch: any[] = []) 
       active = [...names];
     },
   };
-  const ctx = { sessionManager: sm };
+  const ctx = { sessionManager: sm, ui: { setStatus } };
   return {
     api: pi as unknown as ExtensionAPI,
     tools,
     active: () => active,
     sessionManager: sm,
+    statusCalls,
+    statuses: statusCalls,
+    statusWrites: statusCalls,
+    ui: { setStatus },
     fire(event: string, payload: unknown = {}, c?: unknown) {
       const useCtx = c ?? ctx;
       for (const handler of handlers.get(event) ?? []) handler(payload, useCtx);
@@ -111,5 +119,31 @@ describe("feature flag: active set", () => {
     registerFusionDelegate(host.api, enabledConfig);
     host.fire("session_start");
     expect(host.active()).toContain(FUSION_TOOL_NAME);
+  });
+});
+
+describe("fusion footer status (session_start)", () => {
+  it("resume with on-record -> setStatus('fusion','fusion: on')", () => {
+    const branch: any[] = [];
+    const sm = makeSessionManager(branch);
+    sm.appendEntry("pi-fusion.activation", { owner: "s1", enabled: true, ts: 1 });
+    const host = makePi(["read", "bash"], branch);
+    registerFusionDelegate(host.api, enabledConfig);
+    host.fire("session_start");
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: on"]);
+  });
+
+  it("no records -> setStatus('fusion','fusion: off')", () => {
+    const host = makePi();
+    registerFusionDelegate(host.api, enabledConfig);
+    host.fire("session_start");
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: off"]);
+  });
+
+  it("ctx without setStatus is skipped silently", () => {
+    const host = makePi();
+    registerFusionDelegate(host.api, enabledConfig);
+    const sm = host.sessionManager;
+    expect(() => host.fire("session_start", {}, { sessionManager: sm })).not.toThrow();
   });
 });

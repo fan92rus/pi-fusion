@@ -36,6 +36,7 @@ function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
   let active: string[] = ["read", "bash"];
   const notices: Array<{ message: string; level: string }> = [];
   const calls: string[] = [];
+  const statusCalls: Array<[string, any]> = [];
   const branch: any[] = [];
   const sm = {
     getSessionId: () => sessionId,
@@ -76,6 +77,10 @@ function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
     notify: (message: string, level = "info") => {
       notices.push({ message, level });
     },
+    setStatus: (key: string, text: any) => {
+      calls.push("setStatus");
+      statusCalls.push([key, text]);
+    },
     dialogs: null,
     interactiveConfig: async () => {
       calls.push("interactiveConfig");
@@ -97,6 +102,9 @@ function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
     sessionId,
     persisted: () => calls.filter((c) => c === "persist").length,
     resetSession: () => resetForTests(),
+    statusCalls,
+    statuses: statusCalls,
+    statusWrites: statusCalls,
   };
 }
 
@@ -468,4 +476,33 @@ describe("fusionExtension wiring (integration)", () => {
 
   const _commandContext = () =>
     ({ ui: { notify: () => {} } }) as unknown as ExtensionCommandContext;
+});
+
+describe("fusion footer status (command)", () => {
+  it("turnFusion on calls setStatus('fusion','fusion: on')", async () => {
+    const host = makeDeps();
+    await runFusionCommand("on", host.deps);
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: on"]);
+  });
+
+  it("turnFusion off calls setStatus('fusion','fusion: off')", async () => {
+    const host = makeDeps();
+    host.deps.setActivation(true);
+    await runFusionCommand("off", host.deps);
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: off"]);
+  });
+
+  it("idempotent on calls setStatus('fusion','fusion: on')", async () => {
+    const host = makeDeps();
+    host.deps.setActivation(true);
+    host.active().push(TOOL);
+    await runFusionCommand("on", host.deps);
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: on"]);
+  });
+
+  it("idempotent off calls setStatus('fusion','fusion: off')", async () => {
+    const host = makeDeps();
+    await runFusionCommand("off", host.deps);
+    expect(host.statusCalls).toContainEqual(["fusion", "fusion: off"]);
+  });
 });

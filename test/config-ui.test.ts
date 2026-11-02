@@ -49,6 +49,7 @@ function makeDeps(config?: Partial<FusionConfig>) {
     setActivation: () => {},
     appendEntry: () => {},
     sessionManager: { getSessionId: () => "s", getBranch: () => [], appendEntry: () => {} },
+    setStatus: () => {},
   };
   return {
     deps,

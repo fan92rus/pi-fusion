@@ -1,7 +1,8 @@
 # Design: session-only активация fusion
 
-> Status: ЧЕРНОВИК rev.3 — правки по ревью 1.1 (раунды 1–3; runs c65c9407, 848d4dd7,
-> aba5cd65). До независимого ревью до ГОДЕН и утверждения владельца. Ссылки на код
+> Status: rev.4 — правки по ревью 1.1 (раунды 1–3; runs c65c9407, 848d4dd7,
+> aba5cd65; контрольный раунд 4 — run 9f12eee2 — pass) + решение владельца по
+> OQ-C (env PI_FUSION_ON). После контрольного раунда 5 — заморозка. Ссылки на код
 > pi — по установленному node_modules/@earendil-works/pi-coding-agent (dist),
 > проверяются задачей 2.1.
 
@@ -46,7 +47,7 @@
 Новый модуль `extensions/pi-fusion/session-state.ts`:
 
 ```ts
-type ActivationSource = 'memory' | 'history' | 'default-off';
+type ActivationSource = 'memory' | 'history' | 'env' | 'default-off';
 type SessionActivation = { enabled: boolean; source: ActivationSource };
 isSessionEnabled(sm: ReadonlySessionManager): boolean;          // с ленивым восстановлением
 getSessionActivation(sm: ReadonlySessionManager): SessionActivation;
@@ -112,14 +113,20 @@ restrictions.test.ts:101–126 остаются присвоимыми (мень
 
 ## 6. Жизненный цикл сессии
 
-1. `session_start(S, reason)` → restore: последние применимые (owner===S) записи;
-   `resume`/`reload`/`startup` с историей → последнее решение; `new`/`fork` →
-  своих записей нет → off. Restore выполняется ДО фильтра index.ts:193–203.
-2. `/fusion on|off` в S → setSessionEnabled (+appendEntry), идемпотентность FR-006.
+1. `session_start(S, reason)` → порядок: (i) restore из активной ветви по
+   owner-фильтру: `resume`/`reload`/`startup` с историей → последнее применимое
+   решение (источник `history`); `new`/`fork` → своих записей нет; (ii) если
+   применимых записей НЕТ и env `PI_FUSION_ON` ∈ {1,true,yes} (без регистра) →
+   решение on, источник `env`, немедленная явная on-запись этой сессии
+   (appendEntry, владелец S) — FR-008; (iii) иначе off (default-off). Явные
+   записи сессии всегда выигрывают у env (в т.ч. переживший `/fusion off`).
+   Restore выполняется ДО реконсайла index.ts:193–203.
+2. `/fusion on|off` в S → setSessionEnabled (+appendEntry), идемпотентность FR-006;
+   явное off переопределяет env-включение (последняя явная запись выигрывает).
 3. tool_call / `fusion_delegate` / формирование guidance в S → флаг сессии
-  (ленивое восстановление при промахе — §3).
-4. Headless: та же модель; включение — только собственная on-запись сессии
-   (OQ-C; доступность команд в headless проверяет 2.1).
+   (ленивое восстановление при промахе — §3).
+4. Headless `pi -p`: включение — PI_FUSION_ON на запуске или собственная
+   on-запись в истории (resume); доступность интерактивных команд — 2.1.
 
 ## 7. Тесты (TDD; hermetic)
 
@@ -128,7 +135,12 @@ restrictions.test.ts:101–126 остаются присвоимыми (мень
   «on в родителе → форк → off»); restore ТОЛЬКО из активной ветви getBranch
   (запись на другой ветви файла игнорируется); пустая история → default-off
   (кэшируется); последняя применимая запись выигрывает; restore перезаписывает
-  источник (memory→history); идемпотентные set не пишут запись и сравнивают с
+  источник (memory→history); env-активация PI_FUSION_ON: применяется ТОЛЬКО при
+  отсутствии применимых собственных записей (1/true/yes → on с источником env и
+  немедленной on-записью; последующие restore — путь history); пустое значение —
+  как не заданная (без warn); иное непустое → warn и обычные правила; явный off
+  после env-включения — последняя собственная запись, выигрывает у env при
+  reload/resume; идемпотентные set не пишут запись и сравнивают с
   лениво восстановленным значением; изоляция двух sessionId; resetForTests;
   ошибка чтения истории прокидывается (поведение гейтов — ниже).
 - **Component commands (fake deps §5):** on/off меняет только свою сессию; НЕТ
@@ -168,12 +180,15 @@ restrictions.test.ts:101–126 остаются присвоимыми (мень
 - Требуется перезапуск pi. После него НОВЫЕ сессии стартуют off; сессия,
   возобновляемая со своей историей (resume/continue), восстанавливает своё
   последнее решение (FR-003). Рабочая сессия владельца включает `/fusion on`.
-- Живая приёмка (6 пунктов): (1) `/fusion on` в сессии A не включает fusion в
+- Живая приёмка (7 пунктов): (1) `/fusion on` в сессии A не включает fusion в
   параллельной сессии B (статус off, ограничения не действуют); (2) resume/reload
   сессии A восстанавливает on; (3) `/fork` от включённой A стартует off
   (репродукция блокера); (4) `fusion_delegate` при off отказывает с текстом
   FR-004; (5) глобальный `fusion.json` не изменяется после on/off (mtime/контент);
-  (6) headless-поведение по решению OQ-C.
+  (6) headless: `PI_FUSION_ON=1 pi -p …` → fusion активен в этой сессии;
+  без переменной — обычные правила (off/resume-история); явный off в
+  env-включённой сессии выключает и переживает resume; (7) не-булево значение
+  PI_FUSION_ON (например `x`) → warn и обычные правила.
 
 ## 9. Остаточные риски (принимаются явно)
 

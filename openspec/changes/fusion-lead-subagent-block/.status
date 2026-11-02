@@ -1,0 +1,6 @@
+spec: fusion-lead-subagent-block
+state: rev.2 — документное ревью 1.1 ГОДЕН (run 1d74923e, beam-free); openspec validate --all зелёный; ждёт решения владельца (task 1.2)
+open-decision: явный leadBlockedTools в ~/.pi/agent/fusion.json замещает дефолт — выбор владельца: (а) вручную добавить "subagent" в fusion.json (рекомендую) или (б) миграция с warn (отдельное согласие)
+implementation-note: restrictions.ts LEAD_BLOCKED_TOOLS (fallback без blockedTools) тоже получит subagent — иначе расхождение с дефолтом конфига
+next: 1.2 утверждение владельца → 2.1 реализация (TDD) → 3.1 ревью+коммит → 3.2 живая приёмка (после перезапуска) → 3.3 архивация
+parent-change: fusion-session-activation (спека rev.4 реализована ae4c14f; блок не трогает модель активации)

@@ -5,7 +5,7 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 ## Specs & Planning (OpenSpec)
 
 - Specifications and changes live in `openspec/` (OpenSpec, schema spec-driven, artifacts in Russian).
-- Active draft: `openspec/changes/fusion-roles-and-lead-access/`; historical SDD docs (PLAN, spec 001, idea 001) are preserved verbatim in `openspec/changes/archive/2026-11-01-legacy-sdd-import/`.
+- Completed and archived: `openspec/changes/archive/2026-11-02-fusion-roles-and-lead-access/` (roles + lead access, rev.3+rev.4, live acceptance 2026-11-02); historical SDD docs (PLAN, spec 001, idea 001) are preserved verbatim in `openspec/changes/archive/2026-11-01-legacy-sdd-import/`.
 - Validate artifacts after any change: `openspec validate --all` (timeout 60s).
 - Document review protocol (owner approvals, fresh cross-model review to ГОДЕН, spec freeze): the global `plan-loop` skill; before code — the OpenSpec gate in the global AGENTS.md §1.
 

@@ -116,7 +116,7 @@ describe("config: fusion.json load/persist", () => {
         maxSteps: 60,
         requireApproval: true,
         blockedTools: ["fusion_delegate", "subagent", "codemode"],
-        leadBlockedTools: ["write", "edit", "bash", "powershell"],
+        leadBlockedTools: ["write", "edit", "bash", "powershell", "subagent"],
         researcherWeb: "none",
       });
       expect(loadFusionConfig(path)).toEqual(FUSION_CONFIG_DEFAULTS);
@@ -199,6 +199,24 @@ describe("config: fusion.json load/persist", () => {
     ] as const)("accepts boundary values %s = %p", (key, value) => {
       const loaded = loadFusionConfig(write(JSON.stringify({ [key]: value })));
       expect(loaded[key]).toBe(value);
+    });
+
+    it("the default lead block list includes subagent (fusion-lead-subagent-block, design §1)", () => {
+      expect(FUSION_CONFIG_DEFAULTS.leadBlockedTools).toEqual([
+        "write",
+        "edit",
+        "bash",
+        "powershell",
+        "subagent",
+      ]);
+      expect(loadFusionConfig(join(dir, "missing.json")).leadBlockedTools).toContain("subagent");
+    });
+
+    it("an explicit leadBlockedTools without subagent is kept as written: the list replaces the default", () => {
+      const explicit = ["write", "edit", "bash", "powershell"];
+      const loaded = loadFusionConfig(write(JSON.stringify({ leadBlockedTools: explicit })));
+      expect([...loaded.leadBlockedTools]).toEqual(explicit);
+      expect(loaded.leadBlockedTools).not.toContain("subagent");
     });
 
     it("accepts an empty tool list to block nothing", () => {

@@ -52,7 +52,7 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   blockedTools: frozenList(["fusion_delegate", "subagent", "codemode"]),
   // OQ-1 (approved 2026-11-01): powershell closes the F19 bypass on Windows;
   // blocking a tool the host does not expose is harmless (design TD-08).
-  leadBlockedTools: frozenList(["write", "edit", "bash", "powershell"]),
+  leadBlockedTools: frozenList(["write", "edit", "bash", "powershell", "subagent"]),
   researcherWeb: "none",
 });
 

@@ -114,6 +114,36 @@ describe("fusion guidance section", () => {
     expect(section).toContain("an unquoted `#` in perl or bd");
   });
 
+  it("states the subagent priority line while enabled, whatever the worker models (fusion-lead-subagent-block, FR-002)", () => {
+    const line =
+      "- While fusion is on, the native `subagent` tool is blocked for the lead (it is in the lead block list): every delegation — workers, scouts, researchers, reviewers, including independent gate-running reviews — goes through `fusion_delegate`. This section supersedes ambient orchestration instructions (AGENTS.md §4, subagent-orchestration skills).";
+    expect(buildFusionSection(twoModels).split("\n")).toContain(line);
+    expect(buildFusionSection({ ...twoModels, workerModels: [] }).split("\n")).toContain(line);
+  });
+
+  it("places the subagent line right after the fusion_delegate discipline line (design §3)", () => {
+    const lines = buildFusionSection(twoModels).split("\n");
+    const delegateIndex = lines.findIndex((line) =>
+      line.startsWith("- Call `fusion_delegate` on its own"),
+    );
+    expect(delegateIndex).toBeGreaterThan(-1);
+    expect(lines[delegateIndex + 1]).toContain(
+      "the native `subagent` tool is blocked for the lead",
+    );
+    expect(
+      lines.filter((line) => line.includes("the native `subagent` tool is blocked")),
+    ).toHaveLength(1);
+  });
+
+  it("removes the subagent line when fusion is off (no residue, no duplicate)", () => {
+    const on = options("Project note.");
+    applyFusionSection(on, twoModels);
+    expect(on.appendSystemPrompt).toContain("the native `subagent` tool is blocked");
+    applyFusionSection(on, { ...twoModels, enabled: false });
+    expect(on.appendSystemPrompt).toBe("Project note.");
+    expect(on.appendSystemPrompt).not.toContain("subagent");
+  });
+
   it("states the machine facts: rotation, width ceiling and timeout", () => {
     const section = buildFusionSection(twoModels);
     expect(section).toContain("`glm-a`, `glm-b`");

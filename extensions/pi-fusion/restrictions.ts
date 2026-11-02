@@ -37,11 +37,19 @@ const DELEGATE_TOOL = "fusion_delegate";
 /**
  * Default `leadBlockedTools` (PLAN F01 + OQ-1 approved 2026-11-01): the
  * mutating tools plus `powershell` — the host declares that tool name, and
+ * `subagent` (fusion-lead-subagent-block: every delegation goes through
+ * `fusion_delegate`),
  * blocking it closes the F19 bypass on Windows. Blocking a tool the host
  * does not expose is harmless; the perl exception never applies to
  * powershell (design TD-08).
  */
-export const LEAD_BLOCKED_TOOLS: readonly string[] = ["write", "edit", "bash", "powershell"];
+export const LEAD_BLOCKED_TOOLS: readonly string[] = [
+  "write",
+  "edit",
+  "bash",
+  "powershell",
+  "subagent",
+];
 
 /** The additional refusal line when a write/edit falls outside the boundary (design §5.1). */
 export const OPENSPEC_REFUSAL_NOTE =

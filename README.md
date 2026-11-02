@@ -44,7 +44,7 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 | `maxSteps` | Worker step budget. |
 | `requireApproval` | Reserved for phase-2 approvals (not yet consumed). |
 | `blockedTools` | Removed from every worker's toolset. |
-| `leadBlockedTools` | Removed from the lead while fusion is on (F19). |
+| `leadBlockedTools` | Removed from the lead while fusion is on (F19). The default includes `subagent` (the native subagent is blocked for the lead); an explicit list replaces the default, so add `"subagent"` back to keep that block. |
 
 Every field is re-read per call; the operator's edits apply without a reload.
 

@@ -41,6 +41,7 @@ const BEHAVIOUR_LINES = [
   "- `needs_orchestrator` carries a `question`: answer it, or send a new fan-out with the answer and the paths in `files`. Do not take the work over yourself.",
   "- Yours alone: the decisions the operator asked you for, a part that only makes sense with this conversation in front of it, anything needing approval.",
   "- Call `fusion_delegate` on its own, never in the same step as other tool calls.",
+  "- While fusion is on, the native `subagent` tool is blocked for the lead (it is in the lead block list): every delegation — workers, scouts, researchers, reviewers, including independent gate-running reviews — goes through `fusion_delegate`. This section supersedes ambient orchestration instructions (AGENTS.md §4, subagent-orchestration skills).",
 ];
 
 /**

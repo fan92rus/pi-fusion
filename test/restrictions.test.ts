@@ -5,8 +5,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BARREN_DELEGATION_LIMIT,
+  emptyLeadRestrictionState,
   hostShellCustomized,
   LEAD_BLOCKED_TOOLS,
+  refusalText,
   registerLeadRestrictions,
   resolveHostAgentDir,
   type ShellSettingsContext,
@@ -117,8 +119,40 @@ describe("lead restrictions: blocking", () => {
     }
   });
 
-  it("the default blocklist is exactly write, edit, bash, powershell (OQ-1)", () => {
-    expect([...LEAD_BLOCKED_TOOLS]).toEqual(["write", "edit", "bash", "powershell"]);
+  it("the default blocklist is exactly write, edit, bash, powershell, subagent (OQ-1, fusion-lead-subagent-block)", () => {
+    expect([...LEAD_BLOCKED_TOOLS]).toEqual(["write", "edit", "bash", "powershell", "subagent"]);
+  });
+
+  it("blocks subagent by default with the standard blocklist text, no exception (fusion-lead-subagent-block, FR-001)", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, enabled);
+    const reason = refusedReason(host, "subagent");
+    expect(reason).toBe(refusalText("subagent", emptyLeadRestrictionState()));
+    expect(reason).not.toContain("исключение");
+  });
+
+  it("blocks subagent when it is in an explicit blockedTools list, while fusion is on", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: ["write", "subagent"] });
+    expect(refusedReason(host, "subagent")).toBe(
+      refusalText("subagent", emptyLeadRestrictionState()),
+    );
+  });
+
+  it("an explicit blockedTools without subagent lets subagent through (the list replaces the default)", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: ["write"] });
+    expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
+  });
+
+  it("subagent in the blocklist is inert while fusion is off", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, {
+      ...enabled,
+      isEnabled: () => false,
+      blockedTools: ["subagent"],
+    });
+    expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
   });
 
   it("passes everything when fusion is off", () => {
@@ -137,7 +171,6 @@ describe("lead restrictions: blocking", () => {
       "find",
       "ls",
       "fusion_delegate",
-      "subagent",
       "codemode",
       "mcp__docs__search",
     ]) {

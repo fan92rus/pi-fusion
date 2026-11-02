@@ -1,0 +1,9 @@
+
+ RUN  v5.0.5 D:/Documents/Repositories/pi-fusion
+
+
+ Test Files  21 passed (21)
+      Tests  646 passed (646)
+   Start at  15:44:01
+   Duration  1.94s (import 77%, tests 17%, transform 3%, worker 2%)
+

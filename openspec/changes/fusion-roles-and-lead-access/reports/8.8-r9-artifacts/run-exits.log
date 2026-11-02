@@ -1,0 +1,27 @@
+S0: T=4 beads=40
+version exit=0
+help-main exit=0
+help-init exit=0
+help-create exit=0
+help-show exit=0
+help-list exit=0
+help-ready exit=0
+help-update exit=0
+help-close exit=0
+S1: T=16 beads=40
+init exit=0
+S2: T=35 beads=40
+gate-e1 exit=0
+e1 exit=0
+gate-e3-show exit=0
+e3-show exit=0
+gate-e3-list exit=0
+e3-list exit=0
+gate-e3-ready exit=0
+e3-ready exit=0
+gate-e3-upd exit=0
+e3-upd exit=0
+gate-e3-close exit=0
+e3-close exit=0
+S3: T=64 beads=40
+BEADS-IDENTICAL

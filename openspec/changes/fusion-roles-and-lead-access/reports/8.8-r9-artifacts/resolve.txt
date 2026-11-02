@@ -1,0 +1,6 @@
+== type -a bd ==
+bd is /c/tools/bd
+bd is /c/Users/user/AppData/Roaming/npm/bd
+bd is /c/Users/user/AppData/Roaming/npm/bd
+== command -v bd ==
+/c/tools/bd

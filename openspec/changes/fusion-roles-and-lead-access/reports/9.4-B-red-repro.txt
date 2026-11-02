@@ -1,0 +1,1167 @@
+
+ RUN  v5.0.5 D:/tmp/fx1-red
+
+ ❯ test/restrictions.test.ts (122 tests | 80 failed) 209ms
+   ❯ lead restrictions: perl exception (design §6) (11)
+     × expands ~\ in PI_CODING_AGENT_DIR the same way (review minor 14) 13ms
+     × expands ~ in PI_CODING_AGENT_DIR before reading settings (review blocker) 5ms
+   ❯ lead restrictions: run phase (4)
+     × subscribes to tool_call, tool_result and agent_start 3ms
+   ❯ lead restrictions: host shell settings on win32 (design §6.6, tasks 9.4-B) (1)
+     × resolves the host agent dir from USERPROFILE and disables the perl exception (9.4-B) 2ms
+   ❯ host agent dir parity (design §6.6 rule 1, tasks 9.3) (9)
+     × win32: HOME never decides; USERPROFILE and the default come from homedir() 0ms
+     × win32: /c/… maps to a drive path (the host's normalizeWindowsShellPath) 0ms
+     × win32: ~, ~/… and ~\… expand against homedir() 0ms
+     × win32: file:// URLs become paths 0ms
+     × win32: an empty value is unset; ~user is literal; a relative path stays relative 0ms
+     × win32: an unresolvable home-derived dir is undefined (fail-closed, rule 3) 0ms
+     × POSIX: HOME never decides; the default is homedir()/.pi/agent 0ms
+     × POSIX: ~/… expands; ~\… and /c/… are literal; file:// becomes a path 0ms
+     × POSIX: a relative homedir() is unresolvable for a home-derived dir 0ms
+   ❯ host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) (15)
+     × stock when no file configures a shell and every file is absent 0ms
+     × the project file is read and its shellPath disables perl and bd 0ms
+     × a project file that fails with EACCES or holds broken JSON fails closed 0ms
+     × a configured shellCommandPrefix and a truthy non-string shellPath are custom 0ms
+     × a whitespace-only shellPath is configured: the host truthy-checks it, no trim 0ms
+     × a HOME candidate with shellPath disables while the replica is ENOENT 0ms
+     × a HOME candidate that is ENOENT means not configured, and EACCES fails closed 0ms
+     × a HOME equal to homedir() is not an extra candidate 0ms
+     × an unresolvable agent dir is unresolvable, and a custom file still wins 0ms
+     × the agentDir override replaces the replica and needs no resolution 0ms
+     × a relative PI_CODING_AGENT_DIR stays relative and is read relative 0ms
+     ❯ the refusal text names the reason (design §6.7) (4)
+       × custom keeps the rev.3 text byte for byte 2ms
+       × unreadable settings name the unreadable case 1ms
+       × an unresolvable agent dir names that case 1ms
+   ❯ host shell settings: USERPROFILE candidate on win32 (design §6.6 rule 3(в)) (2)
+     × a differing USERPROFILE settings file with shellPath disables perl 0ms
+     × a USERPROFILE equal to homedir() (case-insensitively) is not an extra candidate 0ms
+   ❯ lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) (9)
+     × a runtime that starts custom stays closed after the file turns stock, without a restart 1ms
+     × a runtime that started custom from the project file stays closed when that file turns stock 1ms
+     × a stock runtime that turns custom is closed at once, the reverse path 1ms
+     × session_start (new) re-snapshots: stock after custom lets perl through 0ms
+     × session_start (reload) re-snapshots: stock after custom lets perl through 0ms
+     × session_start re-snapshots the other way: custom written before a new session closes perl 1ms
+     × a custom snapshot holds until the next session_start, whatever the disk says in between 1ms
+     × reads only the injected agent and project settings, never the real profile 0ms
+   ❯ lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) (10)
+     × allows "bd create 'Задача: сделать X'" under the stock shell 1ms
+     × allows "bd show pi-fusion-8t2" under the stock shell 0ms
+     × allows "bd list" under the stock shell 0ms
+     × allows "bd ready" under the stock shell 0ms
+     × allows "bd update pi-fusion-8t2 --claim" under the stock shell 0ms
+     × allows "bd close pi-fusion-8t2" under the stock shell 0ms
+     × allows "\"bd\" list" under the stock shell 0ms
+     × allows "'bd' 'list'" under the stock shell 0ms
+     × allows "bd create '*' \"~\"" under the stock shell 0ms
+   ❯ lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) (7)
+     × a foreign subcommand carries the exact bd reason 7ms
+     × a flag before the subcommand is refused with the subcommand reason 5ms
+     × a metacharacter names the first found character 1ms
+     × an unquoted expansion character refuses with its exact text 3ms
+     × an unquoted # refuses for bd (B-NEW) 3ms
+     × an unclosed quote and a backslash inside double quotes refuse for bd 1ms
+   ❯ lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) (13)
+     × "echo x && bd list" 5ms
+     × "cat x | perl -e 'y'" 6ms
+     × "ls" 3ms
+     × "BD list" 3ms
+     × "command bd list" 3ms
+     × "\"\" list" 2ms
+     × "   " 2ms
+     × "" 2ms
+     × "perl#x" 3ms
+     × a bash call without a command names both exceptions (rev.4 text) 1ms
+     × the B-NEW exploit is refused for perl and for bd: no line after the # runs 1ms
+   ❯ lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) (13)
+     × a replica shellPath disables bd and perl, each with its own text 3ms
+     × a shellCommandPrefix in the replica is custom too 2ms
+     × a PROJECT shellPath disables bd too (merged settings) 2ms
+     × a PROJECT file that is absent is the stock install: bd passes 1ms
+     × an unreadable replica (EACCES) and broken JSON disable bd with the unreadable text 1ms
+     × an unreadable PROJECT file (EACCES, broken JSON) disables bd 2ms
+     × the replica ENOENT is the stock install: bd is allowed 2ms
+     × a HOME candidate that is ENOENT means not configured: bd is allowed 1ms
+     × a HOME candidate with shellPath disables bd while the replica is ENOENT 1ms
+     × a HOME candidate that fails with EACCES fails closed for bd 2ms
+     × an unresolvable agent dir disables bd and perl with their own texts 1ms
+     × an unresolvable dir with a custom project file still says custom 1ms
+     × a stock install lets bd and perl through 0ms
+   ❯ lead restrictions: the design §6.7 refusal texts are byte-exact (tasks 8.5) (4)
+     × bd: the subcommand text, the merged text for other first words, the empty command 1ms
+     × the # reason is the same string for perl and bd 1ms
+     × shellPath: the perl text is the rev.3 text; the bd text is its own 1ms
+     × unreadable settings and an unresolvable agent dir each have their own bd text 1ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 80 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: perl exception (design §6) > expands ~\ in PI_CODING_AGENT_DIR the same way (review minor 14)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:387:30
+    385|         input: { command: "perl -e 'print 42'" },
+    386|       }) as { block?: boolean; reason?: string } | undefined;
+    387|       expect(verdict?.block).toBe(true);
+       |                              ^
+    388|       expect(verdict?.reason).toContain("оболочка не POSIX-совместима"…
+    389|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: perl exception (design §6) > expands ~ in PI_CODING_AGENT_DIR before reading settings (review blocker)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:424:30
+    422|         input: { command: "perl -e 'print 42'" },
+    423|       }) as { block?: boolean; reason?: string } | undefined;
+    424|       expect(verdict?.block).toBe(true);
+       |                              ^
+    425|       expect(verdict?.reason).toContain("оболочка не POSIX-совместима"…
+    426|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: run phase > subscribes to tool_call, tool_result and agent_start
+AssertionError: expected [ 'agent_start', 'tool_call', …(1) ] to deeply equal [ Array(4) ]
+
+- Expected
++ Received
+
+  [
+    "agent_start",
+-   "session_start",
+    "tool_call",
+    "tool_result",
+  ]
+
+ ❯ test/restrictions.test.ts:571:31
+    569|     const host = makeHost();
+    570|     registerLeadRestrictions(host.api, enabled);
+    571|     expect(host.registered()).toEqual(["agent_start", "session_start",…
+       |                               ^
+    572|   });
+    573| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: host shell settings on win32 (design §6.6, tasks 9.4-B) > resolves the host agent dir from USERPROFILE and disables the perl exception (9.4-B)
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:604:12
+    602|
+    603|     // (1) the resolved directory, asserted directly
+    604|     expect(resolveHostAgentDir(env, seams.homedir, "win32")).toBe(
+       |            ^
+    605|       win32.join(userprofile, ".pi", "agent"),
+    606|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: HOME never decides; USERPROFILE and the default come from homedir()
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:633:7
+    631|   it("win32: HOME never decides; USERPROFILE and the default come from…
+    632|     expect(
+    633|       resolveHostAgentDir({ HOME: "/c/Users/other", USERPROFILE: WIN_H…
+       |       ^
+    634|     ).toBe(winDefault);
+    635|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: /c/… maps to a drive path (the host's normalizeWindowsShellPath)
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:638:12
+    636|
+    637|   it("win32: /c/… maps to a drive path (the host's normalizeWindowsShe…
+    638|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "/c/Users/x/agen…
+       |            ^
+    639|       "C:\\Users\\x\\agent",
+    640|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: ~, ~/… and ~\… expand against homedir()
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:647:12
+    645|
+    646|   it("win32: ~, ~/… and ~\\… expand against homedir()", () => {
+    647|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "~" }, winHome, …
+       |            ^
+    648|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "~/custom" }, wi…
+    649|       win32.join(WIN_HOME, "custom"),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: file:// URLs become paths
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:658:7
+    656|   it("win32: file:// URLs become paths", () => {
+    657|     expect(
+    658|       resolveHostAgentDir({ PI_CODING_AGENT_DIR: "file:///C:/Users/x/a…
+       |       ^
+    659|     ).toBe("C:\\Users\\x\\agent");
+    660|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: an empty value is unset; ~user is literal; a relative path stays relative
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:663:12
+    661|
+    662|   it("win32: an empty value is unset; ~user is literal; a relative pat…
+    663|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "" }, winHome, "…
+       |            ^
+    664|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "~user\\x" }, wi…
+    665|       "~user\\x",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > win32: an unresolvable home-derived dir is undefined (fail-closed, rule 3)
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:676:12
+    674|       throw new Error("no home");
+    675|     };
+    676|     expect(resolveHostAgentDir({}, throwing, "win32")).toBeUndefined();
+       |            ^
+    677|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "~/x" }, () => "…
+    678|     expect(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > POSIX: HOME never decides; the default is homedir()/.pi/agent
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:691:12
+    689|
+    690|   it("POSIX: HOME never decides; the default is homedir()/.pi/agent", …
+    691|     expect(resolveHostAgentDir({ HOME: "/home/other" }, posixHome, "li…
+       |            ^
+    692|       "/home/user/.pi/agent",
+    693|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > POSIX: ~/… expands; ~\… and /c/… are literal; file:// becomes a path
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:700:12
+    698|
+    699|   it("POSIX: ~/… expands; ~\\… and /c/… are literal; file:// becomes a…
+    700|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "~/custom" }, po…
+       |            ^
+    701|       "/home/user/custom",
+    702|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/80]⎯
+
+ FAIL  test/restrictions.test.ts > host agent dir parity (design §6.6 rule 1, tasks 9.3) > POSIX: a relative homedir() is unresolvable for a home-derived dir
+TypeError: resolveHostAgentDir is not a function
+ ❯ test/restrictions.test.ts:715:12
+    713|
+    714|   it("POSIX: a relative homedir() is unresolvable for a home-derived d…
+    715|     expect(resolveHostAgentDir({}, () => "relative", "linux")).toBeUnd…
+       |            ^
+    716|     expect(resolveHostAgentDir({ PI_CODING_AGENT_DIR: "/abs" }, () => …
+    717|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > stock when no file configures a shell and every file is absent
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:756:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > the project file is read and its shellPath disables perl and bd
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:763:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a project file that fails with EACCES or holds broken JSON fails closed
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:776:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a configured shellCommandPrefix and a truthy non-string shellPath are custom
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:782:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a whitespace-only shellPath is configured: the host truthy-checks it, no trim
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:789:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a HOME candidate with shellPath disables while the replica is ENOENT
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:794:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a HOME candidate that is ENOENT means not configured, and EACCES fails closed
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:800:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a HOME equal to homedir() is not an extra candidate
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:807:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > an unresolvable agent dir is unresolvable, and a custom file still wins
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:816:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > the agentDir override replaces the replica and needs no resolution
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:831:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > a relative PI_CODING_AGENT_DIR stays relative and is read relative
+TypeError: shellSettingsVerdict is not a function
+ ❯ verdict test/restrictions.test.ts:753:5
+    751|
+    752|   const verdict = (ctx: ShellSettingsContext, extra: { replicaDir?: st…
+    753|     shellSettingsVerdict({ ...ctx, projectRoot: "/proj", ...extra });
+       |     ^
+    754|
+    755|   it("stock when no file configures a shell and every file is absent",…
+ ❯ test/restrictions.test.ts:839:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > the refusal text names the reason (design §6.7) > custom keeps the rev.3 text byte for byte
+AssertionError: the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string
+ ❯ test/restrictions.test.ts:867:55
+    865|
+    866|     it("custom keeps the rev.3 text byte for byte", () => {
+    867|       expect(perlReason(seams({ [project]: SHELL }))).toContain(
+       |                                                       ^
+    868|         "Причина исключения: оболочка не POSIX-совместима (задан shell…
+    869|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > the refusal text names the reason (design §6.7) > unreadable settings name the unreadable case
+AssertionError: the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string
+ ❯ test/restrictions.test.ts:873:62
+    871|
+    872|     it("unreadable settings name the unreadable case", () => {
+    873|       expect(perlReason(seams({}, { [project]: "EACCES" }))).toContain(
+       |                                                              ^
+    874|         "Причина исключения: настройки оболочки нечитаемы или не разоб…
+    875|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: files and candidates (design §6.6 rule 3, tasks 9.3) > the refusal text names the reason (design §6.7) > an unresolvable agent dir names that case
+AssertionError: the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string
+ ❯ test/restrictions.test.ts:884:9
+    882|       expect(
+    883|         perlReason(seams({}, {}, { env: { PI_CODING_AGENT_DIR: "~/x" }…
+    884|       ).toContain(
+       |         ^
+    885|         "Причина исключения: каталог настроек агента не определяется —…
+    886|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: USERPROFILE candidate on win32 (design §6.6 rule 3(в)) > a differing USERPROFILE settings file with shellPath disables perl
+TypeError: shellSettingsVerdict is not a function
+ ❯ test/restrictions.test.ts:914:12
+    912|       throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOEN…
+    913|     };
+    914|     expect(shellSettingsVerdict({ ...win32Seams(other, readFile), proj…
+       |            ^
+    915|       "custom",
+    916|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/80]⎯
+
+ FAIL  test/restrictions.test.ts > host shell settings: USERPROFILE candidate on win32 (design §6.6 rule 3(в)) > a USERPROFILE equal to homedir() (case-insensitively) is not an extra candidate
+TypeError: shellSettingsVerdict is not a function
+ ❯ test/restrictions.test.ts:925:7
+    923|     };
+    924|     expect(
+    925|       shellSettingsVerdict({
+       |       ^
+    926|         ...win32Seams("c:\\users\\USER", readFile),
+    927|         projectRoot: "C:\\proj",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[29/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > a runtime that starts custom stays closed after the file turns stock, without a restart
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:994:38
+    992|     registerLeadRestrictions(host.api, lifecycleOptions(disk));
+    993|     disk.set(AGENT_SETTINGS, STOCK_JSON);
+    994|     expect(bashVerdict(host)?.block).toBe(true);
+       |                                      ^
+    995|     expect(bashVerdict(host)?.reason).toContain("оболочка не POSIX-сов…
+    996|     disk.delete(AGENT_SETTINGS);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[30/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > a runtime that started custom from the project file stays closed when that file turns stock
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:1006:38
+    1004|     startSession(host, "startup");
+    1005|     disk.set(PROJECT_SETTINGS, STOCK_JSON);
+    1006|     expect(bashVerdict(host)?.block).toBe(true);
+       |                                      ^
+    1007|   });
+    1008|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[31/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > a stock runtime that turns custom is closed at once, the reverse path
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:1015:38
+    1013|     expect(bashVerdict(host)).toBeUndefined();
+    1014|     disk.set(AGENT_SETTINGS, SHELL_JSON);
+    1015|     expect(bashVerdict(host)?.block).toBe(true);
+       |                                      ^
+    1016|     expect(bashVerdict(host)?.reason).toContain("оболочка не POSIX-сов…
+    1017|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[32/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > session_start (new) re-snapshots: stock after custom lets perl through
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > session_start (reload) re-snapshots: stock after custom lets perl through
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:1026:40
+    1024|       registerLeadRestrictions(host.api, lifecycleOptions(disk));
+    1025|       disk.delete(AGENT_SETTINGS);
+    1026|       expect(bashVerdict(host)?.block).toBe(true);
+       |                                        ^
+    1027|       startSession(host, reason);
+    1028|       expect(bashVerdict(host)).toBeUndefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[33/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > session_start re-snapshots the other way: custom written before a new session closes perl
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:1038:38
+    1036|     disk.set(AGENT_SETTINGS, SHELL_JSON);
+    1037|     startSession(host, "new");
+    1038|     expect(bashVerdict(host)?.block).toBe(true);
+       |                                      ^
+    1039|   });
+    1040|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[34/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > a custom snapshot holds until the next session_start, whatever the disk says in between
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ test/restrictions.test.ts:1047:38
+    1045|     startSession(host, "new");
+    1046|     disk.delete(AGENT_SETTINGS);
+    1047|     expect(bashVerdict(host)?.block).toBe(true);
+       |                                      ^
+    1048|     startSession(host, "new");
+    1049|     expect(bashVerdict(host)).toBeUndefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[35/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell snapshot lifecycle (fail-closed, no TOCTOU claim) > reads only the injected agent and project settings, never the real profile
+AssertionError: expected 0 to be greater than 0
+ ❯ test/restrictions.test.ts:1058:26
+    1056|     registerLeadRestrictions(host.api, lifecycleOptions(disk, reads));
+    1057|     bashVerdict(host);
+    1058|     expect(reads.length).toBeGreaterThan(0);
+       |                          ^
+    1059|     expect(reads.every((path) => path === AGENT_SETTINGS || path === P…
+    1060|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[36/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd create 'Задача: сделать X'" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd show pi-fusion-8t2" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd list" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd ready" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd update pi-fusion-8t2 --claim" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd close pi-fusion-8t2" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "\"bd\" list" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "'bd' 'list'" under the stock shell
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd exception passes the six subcommands (design §6.5.1) > allows "bd create '*' \"~\"" under the stock shell
+AssertionError: expected { block: true, …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "block": true,
+  "reason": "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl",
+}
+
+ ❯ test/restrictions.test.ts:1150:27
+    1148|     "bd create '*' \"~\"",
+    1149|   ])("allows %j under the stock shell", (command) => {
+    1150|     expect(bash(command)).toBeUndefined();
+       |                           ^
+    1151|   });
+    1152|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[37/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > a foreign subcommand carries the exact bd reason
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: не одиночный вызо…'
+
+Expected: "Причина исключения: не одиночный вызов bd — argv[1] — не подкоманда из списка create/show/list/ready/update/close"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1162:35
+    1160|   it("a foreign subcommand carries the exact bd reason", () => {
+    1161|     for (const command of ["bd init", "bd dolt push", "bd remember 'x'…
+    1162|       expect(bashReason(command)).toContain(
+       |                                   ^
+    1163|         `${BD_NOT_CONFIGURED}не одиночный вызов bd — argv[1] — не подк…
+    1164|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[38/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > a flag before the subcommand is refused with the subcommand reason
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'не одиночный вызов bd — argv[1] — не …'
+
+Expected: "не одиночный вызов bd — argv[1] — не подкоманда из списка create/show/list/ready/update/close"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1174:42
+    1172|
+    1173|   it("a flag before the subcommand is refused with the subcommand reas…
+    1174|     expect(bashReason("bd --json list")).toContain(
+       |                                          ^
+    1175|       "не одиночный вызов bd — argv[1] — не подкоманда из списка creat…
+    1176|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[39/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > a metacharacter names the first found character
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: не одиночный вызо…'
+
+Expected: "Причина исключения: не одиночный вызов bd — метасимвол ";" вне кавычек"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — метасимвол ";" вне кавычек"
+
+ ❯ test/restrictions.test.ts:1180:48
+    1178|
+    1179|   it("a metacharacter names the first found character", () => {
+    1180|     expect(bashReason("bd create x; bd list")).toContain(
+       |                                                ^
+    1181|       `${BD_NOT_CONFIGURED}не одиночный вызов bd — метасимвол ";" вне …
+    1182|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[40/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > an unquoted expansion character refuses with its exact text
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: не одиночный вызо…'
+
+Expected: "Причина исключения: не одиночный вызов bd — неквотированный символ раскрытия оболочки "*""
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1189:37
+    1187|
+    1188|   it("an unquoted expansion character refuses with its exact text", ()…
+    1189|     expect(bashReason("bd list *")).toContain(
+       |                                     ^
+    1190|       `${BD_NOT_CONFIGURED}не одиночный вызов bd — неквотированный сим…
+    1191|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[41/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > an unquoted # refuses for bd (B-NEW)
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: не одиночный вызо…'
+
+Expected: "Причина исключения: не одиночный вызов bd — неквотированный "#" вне кавычек (комментарий оболочки)"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1198:38
+    1196|
+    1197|   it("an unquoted # refuses for bd (B-NEW)", () => {
+    1198|     expect(bashReason("bd list #x")).toContain(
+       |                                      ^
+    1199|       `${BD_NOT_CONFIGURED}не одиночный вызов bd — неквотированный "#"…
+    1200|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[42/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: bash bd refusals name the bd branch (design §6.5.1, §6.7) > an unclosed quote and a backslash inside double quotes refuse for bd
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: не одиночный вызо…'
+
+Expected: "Причина исключения: не одиночный вызов bd — незакрытая одинарная кавычка"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — незакрытая одинарная кавычка"
+
+ ❯ test/restrictions.test.ts:1207:40
+    1205|
+    1206|   it("an unclosed quote and a backslash inside double quotes refuse fo…
+    1207|     expect(bashReason("bd 'unclosed")).toContain(
+       |                                        ^
+    1208|       `${BD_NOT_CONFIGURED}не одиночный вызов bd — незакрытая одинарна…
+    1209|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[43/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "echo x && bd list"
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: разрешены только …'
+
+Expected: "Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — первый токен не perl и не bd"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — метасимвол "&" вне кавычек"
+
+ ❯ test/restrictions.test.ts:1228:33
+    1226|     ["perl#x", `${MERGED}неквотированный "#" вне кавычек (комментарий …
+    1227|   ])("%j", (command, text) => {
+    1228|     expect(bashReason(command)).toContain(`${BD_NOT_CONFIGURED}${text}…
+       |                                 ^
+    1229|   });
+    1230|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[44/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "cat x | perl -e 'y'"
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: разрешены только …'
+
+Expected: "Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — первый токен не perl и не bd"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — метасимвол "|" вне кавычек"
+
+ ❯ test/restrictions.test.ts:1228:33
+    1226|     ["perl#x", `${MERGED}неквотированный "#" вне кавычек (комментарий …
+    1227|   ])("%j", (command, text) => {
+    1228|     expect(bashReason(command)).toContain(`${BD_NOT_CONFIGURED}${text}…
+       |                                 ^
+    1229|   });
+    1230|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[45/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "ls"
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "BD list"
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "command bd list"
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "\"\" list"
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: разрешены только …'
+
+Expected: "Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — первый токен не perl и не bd"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1228:33
+    1226|     ["perl#x", `${MERGED}неквотированный "#" вне кавычек (комментарий …
+    1227|   ])("%j", (command, text) => {
+    1228|     expect(bashReason(command)).toContain(`${BD_NOT_CONFIGURED}${text}…
+       |                                 ^
+    1229|   });
+    1230|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[46/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "   "
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > ""
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: разрешены только …'
+
+Expected: "Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — пустая команда"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — пустая команда"
+
+ ❯ test/restrictions.test.ts:1228:33
+    1226|     ["perl#x", `${MERGED}неквотированный "#" вне кавычек (комментарий …
+    1227|   ])("%j", (command, text) => {
+    1228|     expect(bashReason(command)).toContain(`${BD_NOT_CONFIGURED}${text}…
+       |                                 ^
+    1229|   });
+    1230|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[47/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > "perl#x"
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: разрешены только …'
+
+Expected: "Причина исключения: разрешены только одиночный вызов perl или одиночная команда bd (create/show/list/ready/update/close) — неквотированный "#" вне кавычек (комментарий оболочки)"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1228:33
+    1226|     ["perl#x", `${MERGED}неквотированный "#" вне кавычек (комментарий …
+    1227|   ])("%j", (command, text) => {
+    1228|     expect(bashReason(command)).toContain(`${BD_NOT_CONFIGURED}${text}…
+       |                                 ^
+    1229|   });
+    1230|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[48/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > a bash call without a command names both exceptions (rev.4 text)
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: у вызова нет кома…'
+
+Expected: "Причина исключения: у вызова нет команды — исключения perl и bd не применяются"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: у вызова нет команды — исключение perl не применяется"
+
+ ❯ test/restrictions.test.ts:1232:42
+    1230|
+    1231|   it("a bash call without a command names both exceptions (rev.4 text)…
+    1232|     expect(gateCall("bash", {})?.reason).toContain(
+       |                                          ^
+    1233|       `${BD_NOT_CONFIGURED}у вызова нет команды — исключения perl и bd…
+    1234|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[49/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the merged formula for every other first word (design §6.5.1, §6.7) > the B-NEW exploit is refused for perl and for bd: no line after the # runs
+AssertionError: perl -e 'print 1' #'
+printf MARKER
+#': expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ bashReason test/restrictions.test.ts:1134:35
+    1132| function bashReason(command: string, seams: Partial<ShellSettingsConte…
+    1133|   const verdict = bash(command, seams);
+    1134|   expect(verdict?.block, command).toBe(true);
+       |                                   ^
+    1135|   return verdict?.reason ?? "";
+    1136| }
+ ❯ test/restrictions.test.ts:1247:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[50/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a replica shellPath disables bd and perl, each with its own text
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: оболочка не POSIX…'
+
+Expected: "Причина исключения: оболочка не POSIX-совместима (задан shellPath или префикс) — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1279:42
+    1277|   it("a replica shellPath disables bd and perl, each with its own text…
+    1278|     const seams = { readFile: bdFs({ [BD_REPLICA]: BD_SHELL }) };
+    1279|     expect(bashReason("bd list", seams)).toContain(`${BD_NOT_CONFIGURE…
+       |                                          ^
+    1280|     expect(bashReason("perl -e 'print 42'", seams)).toContain(`${BD_NO…
+    1281|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[51/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a shellCommandPrefix in the replica is custom too
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'оболочка не POSIX-совместима (задан s…'
+
+Expected: "оболочка не POSIX-совместима (задан shellPath или префикс) — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1287:42
+    1285|       readFile: bdFs({ [BD_REPLICA]: JSON.stringify({ shellCommandPref…
+    1286|     };
+    1287|     expect(bashReason("bd list", seams)).toContain(CUSTOM_BD);
+       |                                          ^
+    1288|   });
+    1289|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[52/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a PROJECT shellPath disables bd too (merged settings)
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'оболочка не POSIX-совместима (задан s…'
+
+Expected: "оболочка не POSIX-совместима (задан shellPath или префикс) — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1292:42
+    1290|   it("a PROJECT shellPath disables bd too (merged settings)", () => {
+    1291|     const seams = { readFile: bdFs({ [BD_PROJECT]: BD_SHELL }) };
+    1292|     expect(bashReason("bd list", seams)).toContain(CUSTOM_BD);
+       |                                          ^
+    1293|   });
+    1294|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[53/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a PROJECT file that is absent is the stock install: bd passes
+AssertionError: expected { block: true, …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "block": true,
+  "reason": "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl",
+}
+
+ ❯ test/restrictions.test.ts:1296:77
+    1294|
+    1295|   it("a PROJECT file that is absent is the stock install: bd passes", …
+    1296|     expect(bash("bd list", { readFile: bdFs({ [BD_PROJECT]: BD_STOCK }…
+       |                                                                             ^
+    1297|     expect(bash("bd list", { readFile: bdFs({}) })).toBeUndefined();
+    1298|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[54/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > an unreadable replica (EACCES) and broken JSON disable bd with the unreadable text
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: настройки оболочк…'
+
+Expected: "Причина исключения: настройки оболочки нечитаемы или не разобраны — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1301:87
+    1299|
+    1300|   it("an unreadable replica (EACCES) and broken JSON disable bd with t…
+    1301|     expect(bashReason("bd list", { readFile: bdFs({}, { [BD_REPLICA]: …
+       |                                                                                       ^
+    1302|       `${BD_NOT_CONFIGURED}${UNREADABLE_BD}`,
+    1303|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[55/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > an unreadable PROJECT file (EACCES, broken JSON) disables bd
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'настройки оболочки нечитаемы или не р…'
+
+Expected: "настройки оболочки нечитаемы или не разобраны — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1313:87
+    1311|
+    1312|   it("an unreadable PROJECT file (EACCES, broken JSON) disables bd", (…
+    1313|     expect(bashReason("bd list", { readFile: bdFs({}, { [BD_PROJECT]: …
+       |                                                                                       ^
+    1314|       UNREADABLE_BD,
+    1315|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[56/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > the replica ENOENT is the stock install: bd is allowed
+AssertionError: expected { block: true, …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "block": true,
+  "reason": "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl",
+}
+
+ ❯ test/restrictions.test.ts:1322:53
+    1320|
+    1321|   it("the replica ENOENT is the stock install: bd is allowed", () => {
+    1322|     expect(bash("bd list", { readFile: bdFs({}) })).toBeUndefined();
+       |                                                     ^
+    1323|   });
+    1324|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[57/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a HOME candidate that is ENOENT means not configured: bd is allowed
+AssertionError: expected { block: true, …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "block": true,
+  "reason": "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl",
+}
+
+ ❯ test/restrictions.test.ts:1326:83
+    1324|
+    1325|   it("a HOME candidate that is ENOENT means not configured: bd is allo…
+    1326|     expect(bash("bd list", { env: { HOME: "/home/other" }, readFile: b…
+       |                                                                                   ^
+    1327|   });
+    1328|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[58/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a HOME candidate with shellPath disables bd while the replica is ENOENT
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'оболочка не POSIX-совместима (задан s…'
+
+Expected: "оболочка не POSIX-совместима (задан shellPath или префикс) — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1334:42
+    1332|       readFile: bdFs({ "/home/other/.pi/agent/settings.json": BD_SHELL…
+    1333|     };
+    1334|     expect(bashReason("bd list", seams)).toContain(CUSTOM_BD);
+       |                                          ^
+    1335|   });
+    1336|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[59/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a HOME candidate that fails with EACCES fails closed for bd
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'настройки оболочки нечитаемы или не р…'
+
+Expected: "настройки оболочки нечитаемы или не разобраны — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1342:42
+    1340|       readFile: bdFs({}, { "/home/other/.pi/agent/settings.json": "EAC…
+    1341|     };
+    1342|     expect(bashReason("bd list", seams)).toContain(UNREADABLE_BD);
+       |                                          ^
+    1343|   });
+    1344|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[60/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > an unresolvable agent dir disables bd and perl with their own texts
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'Причина исключения: каталог настроек …'
+
+Expected: "Причина исключения: каталог настроек агента не определяется — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1346:56
+    1344|
+    1345|   it("an unresolvable agent dir disables bd and perl with their own te…
+    1346|     expect(bashReason("bd list", { homedir: noHome })).toContain(
+       |                                                        ^
+    1347|       `${BD_NOT_CONFIGURED}${UNRESOLVABLE_BD}`,
+    1348|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[61/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > an unresolvable dir with a custom project file still says custom
+AssertionError: expected 'bash не выполнен: fusion включён, код…' to contain 'оболочка не POSIX-совместима (задан s…'
+
+Expected: "оболочка не POSIX-совместима (задан shellPath или префикс) — исключение bd отключено"
+Received: "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1357:42
+    1355|   it("an unresolvable dir with a custom project file still says custom…
+    1356|     const seams = { homedir: noHome, readFile: bdFs({ [BD_PROJECT]: BD…
+    1357|     expect(bashReason("bd list", seams)).toContain(CUSTOM_BD);
+       |                                          ^
+    1358|   });
+    1359|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[62/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: shell settings disable the bd exception with its own text (design §6.5.3, §6.7) > a stock install lets bd and perl through
+AssertionError: expected { block: true, …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "block": true,
+  "reason": "bash не выполнен: fusion включён, код пишут воркеры — планируй и делегируй — отправь fusion_delegate: по одной задаче на независимую часть, в files — точные пути, которые она создаёт, критерий готовности и формат ответа. Причина исключения: не одиночный вызов perl — первый токен не perl",
+}
+
+ ❯ test/restrictions.test.ts:1361:29
+    1359|
+    1360|   it("a stock install lets bd and perl through", () => {
+    1361|     expect(bash("bd list")).toBeUndefined();
+       |                             ^
+    1362|     expect(bash("perl -e 'print 42'")).toBeUndefined();
+    1363|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[63/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the design §6.7 refusal texts are byte-exact (tasks 8.5) > bd: the subcommand text, the merged text for other first words, the empty command
+AssertionError: expected 'не одиночный вызов perl — первый токе…' to be 'не одиночный вызов bd — argv[1] — не …' // Object.is equality
+
+Expected: "не одиночный вызов bd — argv[1] — не подкоманда из списка create/show/list/ready/update/close"
+Received: "не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1403:38
+    1401|
+    1402|   it("bd: the subcommand text, the merged text for other first words, …
+    1403|     expect(causeOf(bash("bd init"))).toBe(
+       |                                      ^
+    1404|       "не одиночный вызов bd — argv[1] — не подкоманда из списка creat…
+    1405|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[64/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the design §6.7 refusal texts are byte-exact (tasks 8.5) > the # reason is the same string for perl and bd
+AssertionError: expected '' to contain 'Причина исключения: '
+
+- Expected
++ Received
+
+- Причина исключения: 
+
+ ❯ causeOf test/restrictions.test.ts:1395:28
+    1393|   const causeOf = (verdict: Verdict): string => {
+    1394|     const reason = verdict?.reason ?? "";
+    1395|     expect(reason, reason).toContain(PREFIX);
+       |                            ^
+    1396|     return reason.slice(reason.indexOf(PREFIX) + PREFIX.length);
+    1397|   };
+ ❯ test/restrictions.test.ts:1419:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[65/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the design §6.7 refusal texts are byte-exact (tasks 8.5) > shellPath: the perl text is the rev.3 text; the bd text is its own
+AssertionError: expected '' to contain 'Причина исключения: '
+
+- Expected
++ Received
+
+- Причина исключения: 
+
+ ❯ causeOf test/restrictions.test.ts:1395:28
+    1393|   const causeOf = (verdict: Verdict): string => {
+    1394|     const reason = verdict?.reason ?? "";
+    1395|     expect(reason, reason).toContain(PREFIX);
+       |                            ^
+    1396|     return reason.slice(reason.indexOf(PREFIX) + PREFIX.length);
+    1397|   };
+ ❯ test/restrictions.test.ts:1425:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[66/80]⎯
+
+ FAIL  test/restrictions.test.ts > lead restrictions: the design §6.7 refusal texts are byte-exact (tasks 8.5) > unreadable settings and an unresolvable agent dir each have their own bd text
+AssertionError: expected 'не одиночный вызов perl — первый токе…' to be 'настройки оболочки нечитаемы или не р…' // Object.is equality
+
+Expected: "настройки оболочки нечитаемы или не разобраны — исключение bd отключено"
+Received: "не одиночный вызов perl — первый токен не perl"
+
+ ❯ test/restrictions.test.ts:1434:90
+    1432|
+    1433|   it("unreadable settings and an unresolvable agent dir each have thei…
+    1434|     expect(causeOf(bash("bd list", { readFile: bdFs({}, { [BD_REPLICA]…
+       |                                                                                          ^
+    1435|       "настройки оболочки нечитаемы или не разобраны — исключение bd о…
+    1436|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[67/80]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  80 failed | 42 passed (122)
+   Start at  15:43:46
+   Duration  1.45s (import 43%, tests 31%, transform 26%, worker 1%)
+

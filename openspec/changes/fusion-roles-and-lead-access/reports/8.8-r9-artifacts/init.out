@@ -1,0 +1,26 @@
+  ✓ Created AGENTS.md with agent instructions
+Installing Claude hooks for this project...
+✓ Registered SessionStart hook
+✓ Registered PreCompact hook
+Installing Claude Code integration...
+✓ Created new CLAUDE.md with beads integration
+
+✓ Claude Code integration installed
+  File: C:\Users\user\AppData\Local\Temp\fusion-bd-leadr9-20261102-160648\work\CLAUDE.md
+No additional configuration needed!
+
+✓ Claude Code integration installed
+  Settings: C:\Users\user\AppData\Local\Temp\fusion-bd-leadr9-20261102-160648\work\.claude\settings.json
+
+Restart Claude Code for changes to take effect.
+
+✓ bd initialized successfully!
+
+  Backend: dolt
+  Mode: embedded
+  Database: work
+  Issue prefix: work
+  Issues will be named: work-<hash> (e.g., work-a3f2dd)
+
+Run bd quickstart to get started.
+

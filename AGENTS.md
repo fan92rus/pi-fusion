@@ -89,3 +89,16 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+
+### Fusion bd-harness exception (owner decision 2026-11-02)
+
+Интеграционный harness задачи 8.8 изменения `fusion-roles-and-lead-access`
+(openspec/changes/fusion-roles-and-lead-access/tasks.md) может запускать настоящий
+`bd` — но ТОЛЬКО внутри изолированного временного каталога T с перенаправленным
+окружением по tasks 8.8(b) (HOME/USERPROFILE, XDG_*, APPDATA/LOCALAPPDATA,
+TEMP/TMP/TMPDIR внутрь T; BEADS_*/BD_*/DOLT_* сняты). Утверждено владельцем
+2026-11-02: решение «Да, утвердить и реализовать» по самой поправке и отдельный
+ответ «Перезапустить чистый прогон r4 с твоим явным ответом как авторизацией».
+`--global` отклоняется до запуска. Вне этого harness воркеры bd не запускают и
+`.beads/` проекта не трогают — общее правило трекера не меняется.

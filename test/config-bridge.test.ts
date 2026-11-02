@@ -24,7 +24,6 @@ describe("config-bridge readFusionConfig", () => {
   it("uses the design defaults when fusion.json is absent", () => {
     const config = readFusionConfig(join(dir, "missing.json"));
     expect(config).toEqual({
-      enabled: false,
       workers: 3,
       maxParallel: 3,
       taskTimeoutMs: 600_000,
@@ -48,7 +47,6 @@ describe("config-bridge readFusionConfig", () => {
       }),
     );
     expect(readFusionConfig(path)).toEqual({
-      enabled: true,
       workers: 5,
       maxParallel: 4,
       taskTimeoutMs: 120_000,
@@ -56,6 +54,13 @@ describe("config-bridge readFusionConfig", () => {
       maxSteps: 25,
       researcherWeb: "both",
     });
+  });
+
+  it("ignores a legacy enabled field: the shared snapshot has no activation key", () => {
+    const config = readFusionConfig(write(JSON.stringify({ enabled: true, workers: 4 })));
+    expect(config).not.toHaveProperty("enabled");
+    expect(config.workers).toBe(4);
+    expect(FUSION_CONFIG_DEFAULTS).not.toHaveProperty("enabled");
   });
 
   it("keeps the default for each field that is missing or ill-typed", () => {

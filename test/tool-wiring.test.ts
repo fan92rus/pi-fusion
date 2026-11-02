@@ -18,19 +18,31 @@ interface RegisteredTool {
 }
 
 /** A pi stand-in: records registrations and keeps the active tool set like the host does. */
-function makePi(initialActive: string[] = ["read", "bash"]) {
+function makeSessionManager(branch: any[] = []) {
+  return {
+    getSessionId: () => "s1",
+    getBranch: () => branch,
+    appendEntry: (type: string, data: unknown) => {
+      branch.push({ type: "custom", customType: type, data });
+    },
+  };
+}
+
+function makePi(initialActive: string[] = ["read", "bash"], branch: any[] = []) {
   const tools: RegisteredTool[] = [];
-  const handlers = new Map<string, Array<(payload?: unknown) => void>>();
+  const handlers = new Map<string, Array<(payload?: unknown, ctx?: unknown) => void>>();
   let active = [...initialActive];
-  const pi = {
+  const sm = makeSessionManager(branch);
+  const pi: any = {
     events: createFakePiEvents(),
+    appendEntry: (type: string, data: unknown) => sm.appendEntry(type, data),
     registerTool(tool: RegisteredTool) {
       tools.push(tool);
       // Host rule (docs extensions.md:277): registering a direct tool activates it.
       if (tool.exposure === "direct" && !active.includes(tool.name)) active.push(tool.name);
     },
     registerCommand() {}, // fusionExtension now also registers /fusion
-    on(event: string, handler: (payload?: unknown) => void) {
+    on(event: string, handler: (payload?: unknown, ctx?: unknown) => void) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
       return () => {};
     },
@@ -39,19 +51,22 @@ function makePi(initialActive: string[] = ["read", "bash"]) {
       active = [...names];
     },
   };
+  const ctx = { sessionManager: sm };
   return {
     api: pi as unknown as ExtensionAPI,
     tools,
     active: () => active,
-    fire(event: string, payload?: unknown) {
-      for (const handler of handlers.get(event) ?? []) handler(payload);
+    sessionManager: sm,
+    fire(event: string, payload: unknown = {}, c?: unknown) {
+      const useCtx = c ?? ctx;
+      for (const handler of handlers.get(event) ?? []) handler(payload, useCtx);
     },
     has: (event: string) => handlers.has(event),
   };
 }
 
-const enabledConfig: FusionConfig = { ...FUSION_CONFIG_DEFAULTS, enabled: true };
-const disabledConfig: FusionConfig = { ...FUSION_CONFIG_DEFAULTS, enabled: false };
+const enabledConfig: FusionConfig = { ...FUSION_CONFIG_DEFAULTS };
+const disabledConfig: FusionConfig = { ...FUSION_CONFIG_DEFAULTS };
 
 describe("fusion_delegate registration", () => {
   it("registers the tool as direct with a FanoutResult outputSchema and an object parameter schema", () => {
@@ -79,7 +94,7 @@ describe("worker-brief request capture", () => {
 });
 
 describe("feature flag: active set", () => {
-  it("with enabled=false the tool is removed from the active set at session start", () => {
+  it("off session removes the tool at session start", () => {
     const host = makePi();
     registerFusionDelegate(host.api, disabledConfig);
     expect(host.active()).toContain(FUSION_TOOL_NAME);
@@ -88,8 +103,11 @@ describe("feature flag: active set", () => {
     expect(host.active()).toEqual(["read", "bash"]);
   });
 
-  it("with enabled=true the tool stays in the active set", () => {
-    const host = makePi();
+  it("on session keeps the tool at session start", () => {
+    const branch: any[] = [];
+    const sm = makeSessionManager(branch);
+    sm.appendEntry("pi-fusion.activation", { owner: "s1", enabled: true, ts: 1 });
+    const host = makePi(["read", "bash"], branch);
     registerFusionDelegate(host.api, enabledConfig);
     host.fire("session_start");
     expect(host.active()).toContain(FUSION_TOOL_NAME);

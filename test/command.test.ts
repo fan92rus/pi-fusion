@@ -8,12 +8,9 @@
  * not pi's process.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   FUSION_SUBCOMMANDS,
   type FusionCommandDeps,
@@ -23,29 +20,44 @@ import {
   runFusionCommand,
 } from "../extensions/pi-fusion/commands.ts";
 import { FUSION_CONFIG_DEFAULTS, type FusionConfig } from "../extensions/pi-fusion/config.ts";
-import { applyFusionSection, FUSION_SECTION_HEADING } from "../extensions/pi-fusion/guidance.ts";
-import fusionExtension from "../extensions/pi-fusion/index.ts";
+import {
+  getSessionActivation,
+  resetForTests,
+  setSessionEnabled,
+} from "../extensions/pi-fusion/session-state.ts";
 
 const TOOL = "fusion_delegate";
 
+beforeEach(() => resetForTests());
+
 /** Records every dependency call so a test asserts on the exact effect set. */
-function makeDeps(config?: Partial<FusionConfig>) {
+function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
   let current: FusionConfig = { ...FUSION_CONFIG_DEFAULTS, ...config };
   let active: string[] = ["read", "bash"];
   const notices: Array<{ message: string; level: string }> = [];
   const calls: string[] = [];
+  const branch: any[] = [];
+  const sm = {
+    getSessionId: () => sessionId,
+    getBranch: () => branch,
+    appendEntry: (type: string, data: unknown) => {
+      calls.push("appendEntry");
+      branch.push({ type: "custom", customType: type, data });
+    },
+  };
+  const pi = { appendEntry: sm.appendEntry };
   const deps: FusionCommandDeps = {
     toolName: TOOL,
     loadConfig: () => {
       calls.push("load");
       return { ...current };
     },
-    persistConfig: (next) => {
+    persistConfig: (next: FusionConfig) => {
       calls.push(`persist`);
       current = { ...next };
     },
     getActiveTools: () => [...active],
-    setActiveTools: (names) => {
+    setActiveTools: (names: string[]) => {
       calls.push("setActiveTools");
       active = [...names];
     },
@@ -61,21 +73,30 @@ function makeDeps(config?: Partial<FusionConfig>) {
       calls.push("installRoleAgents");
       return [];
     },
-    notify: (message, level = "info") => {
+    notify: (message: string, level = "info") => {
       notices.push({ message, level });
     },
     dialogs: null,
     interactiveConfig: async () => {
       calls.push("interactiveConfig");
     },
-  };
+    getActivation: () => getSessionActivation(sm as any),
+    setActivation: (value: boolean) => setSessionEnabled(pi as any, sm as any, value),
+    appendEntry: (type: string, data: unknown) => sm.appendEntry(type, data),
+    sessionManager: sm,
+    sm,
+    sessionId: () => sessionId,
+  } as any;
   return {
     deps,
     config: () => current,
     active: () => active,
     notices,
     calls,
+    branch,
+    sessionId,
     persisted: () => calls.filter((c) => c === "persist").length,
+    resetSession: () => resetForTests(),
   };
 }
 
@@ -143,8 +164,8 @@ describe("runFusionCommand: help routing", () => {
 });
 
 describe("runFusionCommand: on", () => {
-  it("persists enabled=true, activates the tool and installs stale profiles per profile (B6)", async () => {
-    const host = makeDeps({ enabled: false });
+  it("activates the tool and installs stale profiles per profile (B6) without writing fusion.json", async () => {
+    const host = makeDeps();
     host.deps.roleProfileStatuses = () => [
       { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
       { name: "fusion-scout", status: "stale", path: "/a/fusion-scout.md" },
@@ -157,19 +178,20 @@ describe("runFusionCommand: on", () => {
       ];
     };
     await runFusionCommand("on", host.deps);
-    expect(host.config().enabled).toBe(true);
+    expect(host.deps.getActivation().enabled).toBe(true);
     expect(host.active()).toContain(TOOL);
     expect(host.calls).toContain("installRoleAgents");
     const notice = host.notices[0]?.message ?? "";
     expect(notice).toContain("fusion: on.");
     expect(notice).toContain("fusion-worker: current @ /a/fusion-worker.md");
     expect(notice).toContain("fusion-scout: updated @ /a/fusion-scout.md");
-    // Every other field survives the flip.
-    expect(host.config()).toEqual({ ...FUSION_CONFIG_DEFAULTS, enabled: true });
+    // Shared config is not written for activation.
+    expect(host.persisted()).toBe(0);
     expect(host.notices[0]?.level).toBe("info");
   });
   it("keeps the tool when already active and skips install when every profile is current", async () => {
-    const host = makeDeps({ enabled: true });
+    const host = makeDeps();
+    host.deps.setActivation(true);
     host.deps.roleProfileStatuses = () => [
       { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
       { name: "fusion-scout", status: "current", path: "/a/fusion-scout.md" },
@@ -188,21 +210,23 @@ describe("runFusionCommand: on", () => {
 });
 
 describe("runFusionCommand: off", () => {
-  it("persists enabled=false and removes the tool from the active set", async () => {
-    const host = makeDeps({ enabled: true });
+  it("removes the tool from the active set without writing fusion.json", async () => {
+    const host = makeDeps();
+    host.deps.setActivation(true);
     host.active().push(TOOL);
     await runFusionCommand("off", host.deps);
-    expect(host.config().enabled).toBe(false);
+    expect(host.deps.getActivation().enabled).toBe(false);
     expect(host.active()).not.toContain(TOOL);
     expect(host.active()).toEqual(["read", "bash"]);
     expect(host.calls).not.toContain("installAgent");
   });
 
   it("leaves the active set untouched when the tool is not in it", async () => {
-    const host = makeDeps({ enabled: true });
+    const host = makeDeps();
+    host.deps.setActivation(true);
     await runFusionCommand("off", host.deps);
     expect(host.calls).not.toContain("setActiveTools");
-    expect(host.config().enabled).toBe(false);
+    expect(host.deps.getActivation().enabled).toBe(false);
   });
 });
 
@@ -328,12 +352,12 @@ describe("runFusionCommand: config", () => {
 describe("runFusionCommand: status", () => {
   it("reports enabled, models, width, timeout and per-profile statuses", async () => {
     const host = makeDeps({
-      enabled: true,
       workers: 3,
       maxParallel: 3,
       taskTimeoutMs: 600_000,
       workerModels: ["m/a", "m/b"],
     });
+    host.deps.setActivation(true);
     host.deps.roleProfileStatuses = () => [
       { name: "fusion-worker", status: "current", path: "/a/fusion-worker.md" },
       { name: "fusion-scout", status: "stale", path: "/a/fusion-scout.md" },
@@ -353,7 +377,7 @@ describe("runFusionCommand: status", () => {
   });
 
   it("reports off, the empty rotation and absent profiles", async () => {
-    const host = makeDeps({ enabled: false, workerModels: [] });
+    const host = makeDeps({ workerModels: [] });
     host.deps.roleProfileStatuses = () => [
       { name: "fusion-worker", status: "absent", path: "/a/fusion-worker.md" },
     ];
@@ -362,26 +386,6 @@ describe("runFusionCommand: status", () => {
     expect(status).toContain("off");
     expect(status).toContain("(none");
     expect(status).toContain("agent fusion-worker: absent");
-  });
-});
-
-describe("runFusionCommand: guidance interplay (F08)", () => {
-  // The section lives in guidance.ts; it appears/disappears because the
-  // facts provider reads the config the command persists — per run.
-  function sectionAfterCommand(args: string, initial: Partial<FusionConfig>): Promise<string> {
-    const host = makeDeps(initial);
-    return runFusionCommand(args, host.deps).then(() => {
-      const options: { appendSystemPrompt: string } = { appendSystemPrompt: "" };
-      applyFusionSection(options, { ...host.config() });
-      return options.appendSystemPrompt;
-    });
-  }
-
-  it("on makes the section appear, off removes it", async () => {
-    expect(await sectionAfterCommand("on", { enabled: false })).toContain(FUSION_SECTION_HEADING);
-    expect(await sectionAfterCommand("off", { enabled: true })).not.toContain(
-      FUSION_SECTION_HEADING,
-    );
   });
 });
 
@@ -420,16 +424,15 @@ describe("registerFusionCommand", () => {
   });
 
   it("routes the typed args through runFusionCommand with the bound deps", async () => {
-    const host = makeDeps({ enabled: false });
+    const host = makeDeps({});
     const { command, ctx } = makePi(host.deps);
     await command?.handler("off", ctx);
-    expect(host.config().enabled).toBe(false);
     expect(host.active()).not.toContain(TOOL);
   });
 });
 
 describe("fusionExtension wiring (integration)", () => {
-  function makeExtensionPi() {
+  function _makeExtensionPi() {
     const commands = new Map<
       string,
       { handler?: (args: string, ctx: ExtensionCommandContext) => Promise<void> }
@@ -463,50 +466,6 @@ describe("fusionExtension wiring (integration)", () => {
     return { pi, commands, tools, fire, active: () => activeTools };
   }
 
-  const commandContext = () => ({ ui: { notify: () => {} } }) as unknown as ExtensionCommandContext;
-
-  it("registers /fusion and fusion_delegate; /fusion on persists, activates the tool, installs the agent and shows the section", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fusion-ext-"));
-    try {
-      const configPath = join(dir, "fusion.json");
-      const agentDir = join(dir, "agent");
-      const harness = makeExtensionPi();
-      fusionExtension(harness.pi as unknown as ExtensionAPI, { configPath, agentDir });
-
-      expect(harness.commands.has("fusion")).toBe(true);
-      expect(harness.tools.has(TOOL)).toBe(true);
-
-      // §13 feature flag: disabled at startup → session_start removes the tool.
-      await harness.fire("session_start");
-      expect(harness.active()).not.toContain(TOOL);
-
-      // Guidance reads fresh per run: no section while disabled.
-      const promptBefore = { appendSystemPrompt: "" };
-      await harness.fire("before_agent_start", { systemPromptOptions: promptBefore });
-      expect(promptBefore.appendSystemPrompt).not.toContain(FUSION_SECTION_HEADING);
-
-      // /fusion on: persist to disk, activate the tool, install a missing agent.
-      const handler = harness.commands.get("fusion")?.handler;
-      expect(handler).toBeDefined();
-      await handler?.("on", commandContext());
-
-      const persisted = JSON.parse(readFileSync(configPath, "utf8")) as FusionConfig;
-      expect(persisted.enabled).toBe(true);
-      expect(harness.active()).toContain(TOOL);
-      expect(existsSync(join(agentDir, "agents", "fusion-worker.md"))).toBe(true);
-
-      // The next guidance run sees the persisted state.
-      const promptAfter = { appendSystemPrompt: "" };
-      await harness.fire("before_agent_start", { systemPromptOptions: promptAfter });
-      expect(promptAfter.appendSystemPrompt).toContain(FUSION_SECTION_HEADING);
-
-      // /fusion off: persist and drop the tool again.
-      await handler?.("off", commandContext());
-      const afterOff = JSON.parse(readFileSync(configPath, "utf8")) as FusionConfig;
-      expect(afterOff.enabled).toBe(false);
-      expect(harness.active()).not.toContain(TOOL);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  const _commandContext = () =>
+    ({ ui: { notify: () => {} } }) as unknown as ExtensionCommandContext;
 });

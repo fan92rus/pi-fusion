@@ -124,7 +124,7 @@ function isFanoutResult(value: unknown): value is FanoutResult {
 
 export interface LeadRestrictionOptions {
   /** Feature flag: the gate applies only while fusion is on. */
-  isEnabled: () => boolean;
+  isEnabled: (ctx?: unknown) => boolean;
   /** Tools the lead may not call; defaults to LEAD_BLOCKED_TOOLS. */
   blockedTools?: readonly string[];
   /** False in a child worker process; defaults to "not PI_SUBAGENT_CHILD=1". */
@@ -499,7 +499,13 @@ export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrict
 
   pi.on("tool_call", (event, ctx): ToolCallEventResult | undefined => {
     if (!blocked.has(event.toolName)) return undefined;
-    if (!options.isEnabled() || !isLeadSession()) return undefined;
+    let enabled = false;
+    try {
+      enabled = options.isEnabled(ctx);
+    } catch {
+      return { block: true, reason: "не удалось восстановить состояние сессии" };
+    }
+    if (!enabled || !isLeadSession()) return undefined;
     const projectRoot = projectRootOf(ctx);
     // Fail-closed: a non-stock snapshot wins over the live read; the live read
     // only matters when the snapshot is stock (the stock -> custom path).

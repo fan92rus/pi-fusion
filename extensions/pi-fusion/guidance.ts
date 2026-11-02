@@ -15,17 +15,19 @@ import type {
   ExtensionAPI,
   NormalizedBuildSystemPromptOptions,
 } from "@earendil-works/pi-coding-agent";
-import type { FusionConfig } from "./config-bridge.ts";
 import { BUDGET_CEILING_FACTOR, PER_MODEL_CAP } from "./pool/fanout.ts";
 
 /** The fixed heading that marks the section; idempotency is keyed on it. */
 export const FUSION_SECTION_HEADING = "### fusion";
 
 /** The settings the section states. `enabled` decides whether it is present at all. */
-export type FusionGuidanceFacts = Pick<
-  FusionConfig,
-  "enabled" | "workers" | "maxParallel" | "taskTimeoutMs" | "workerModels"
->;
+export type FusionGuidanceFacts = {
+  enabled: boolean;
+  workers: number;
+  maxParallel: number;
+  taskTimeoutMs: number;
+  workerModels: string[];
+};
 
 /** The behavioural lines: true on any machine, so they are always stated. */
 const BEHAVIOUR_LINES = [
@@ -112,8 +114,11 @@ export function applyFusionSection(
  * Applies the section on every `before_agent_start`. `facts` is read per run,
  * so a change of the settings takes effect on the next run.
  */
-export function registerFusionGuidance(pi: ExtensionAPI, facts: () => FusionGuidanceFacts): void {
-  pi.on("before_agent_start", (event) => {
-    applyFusionSection(event.systemPromptOptions, facts());
+export function registerFusionGuidance(
+  pi: ExtensionAPI,
+  facts: (ctx?: unknown) => FusionGuidanceFacts,
+): void {
+  pi.on("before_agent_start", (event, ctx) => {
+    applyFusionSection(event.systemPromptOptions, facts(ctx));
   });
 }

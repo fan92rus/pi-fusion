@@ -25,7 +25,6 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 
 ```json
 {
-  "enabled": true,
   "workers": 3,
   "maxParallel": 3,
   "taskTimeoutMs": 600000,
@@ -39,7 +38,6 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 
 | Field | Meaning |
 |---|---|
-| `enabled` | Feature flag: the tool is declared to the model only while true. |
 | `workers` / `maxParallel` | Requested width and the hard concurrency ceiling. |
 | `taskTimeoutMs` | Per-task wall-time budget (30 000 … 3 600 000). |
 | `workerModels` | The rotation; **empty → every call is refused up front.** |
@@ -50,9 +48,23 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 
 Every field is re-read per call; the operator's edits apply without a reload.
 
+## Activation (session-only)
+
+Fusion activation lives in the **current session only** — there is no global
+flag. State is held in memory for the session and restored from the session
+history on `resume`/`reload`; `/fusion on` and `/fusion off` affect only the
+current session. New sessions and forks start **off**.
+
+Migration: an `enabled` field left in `fusion.json` is ignored (a single warn
+per process) and the file is **not** rewritten — remove the field by hand if
+desired. Headless: set `PI_FUSION_ON` to one of `1`, `true`, `yes` to enable
+fusion on launch for that session; the variable never overrides an explicit
+session decision, an empty value means "not set", and any other non-empty value
+produces a warning.
+
 ## The `/fusion` command
 
-`/fusion on` (persists `enabled`, activates `fusion_delegate`, installs the
+`/fusion on` (activates `fusion_delegate` for the current session only, installs the
 missing worker agent), `/fusion off`, `/fusion status`, `/fusion workers 4`,
 `/fusion model vendor/a, vendor/b`, `/fusion timeout 300000`, `/fusion help`.
 Model ids keep their case; numbers are validated against the same bounds the
@@ -89,7 +101,7 @@ no codemode), fresh context, and must answer with the structured
 While fusion is enabled the lead cannot call `write`, `edit` or `bash` —
 the doing belongs to the workers. After a fan-out the gate tells the lead to
 review and re-dispatch; two consecutive zero-work fan-outs raise the barren
-escalation. `/fusion off` frees the lead immediately. The gate is inert in
+escalation. `/fusion off` frees the lead for this session immediately. The gate is inert in
 worker child processes (`PI_SUBAGENT_CHILD=1`).
 
 ## Honest degradation

@@ -5,8 +5,10 @@
  * ill-typed field falls back to the design defaults for that scope, so the
  * extension never fails to load over its own settings.
  *
- * `enabled` (default false) drives the feature flag in index.ts: while it is
- * false the tool is registered but removed from the active set.
+ * Activation is NOT part of this snapshot: it is per session (session-state.ts),
+ * and the retired `enabled` field in fusion.json is ignored (config.ts warns).
+ * Production reads go through config.ts `loadFusionConfig`; this is the thin
+ * read wrapper kept for the bridge tests.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -15,8 +17,6 @@ import type { FanoutConfig } from "./pool/fanout.ts";
 import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
 
 export interface FusionConfig extends FanoutConfig {
-  /** Feature flag (§13): the tool is declared to the model only when true. */
-  enabled: boolean;
   /**
    * The researcher's web-tool composition (design §4.9.3): the seam picks
    * the researcher profile variant by it. Default `none`.
@@ -26,7 +26,6 @@ export interface FusionConfig extends FanoutConfig {
 
 /** Design defaults: workers 3, maxParallel 3, taskTimeoutMs 600000, maxSteps 60, no models. */
 export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
-  enabled: false,
   workers: 3,
   maxParallel: 3,
   taskTimeoutMs: 600_000,
@@ -72,7 +71,6 @@ export function readFusionConfig(path: string = defaultFusionConfigPath()): Read
     typeof v === "string" && (RESEARCHER_WEB_MODES as readonly string[]).includes(v);
   const defaults = FUSION_CONFIG_DEFAULTS;
   return Object.freeze({
-    enabled: pick(fields.enabled, (v): v is boolean => typeof v === "boolean", defaults.enabled),
     workers: pick(fields.workers, isPositiveInteger, defaults.workers),
     maxParallel: pick(fields.maxParallel, isPositiveInteger, defaults.maxParallel),
     taskTimeoutMs: pick(fields.taskTimeoutMs, isPositiveInteger, defaults.taskTimeoutMs),

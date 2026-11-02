@@ -29,39 +29,58 @@
 
 ## 2. Реализация (TDD; каждая задача — красный→зелёный; гейты волны зелёные)
 
-- [ ] 2.1 Живая сверка фактов API pi (design §2): getSessionId/getBranch/
+- [x] 2.1 Живая сверка фактов API pi (design §2): getSessionId/getBranch/
   appendEntry/пятый аргумент execute/SessionStartEvent.reason/копирование
   CustomEntry при createBranchedSession — по dist и мини-пробой (печатать
   ExtensionContext обработчика session_start); доступность /fusion и
   PI_FUSION_ON в headless `pi -p`. Расхождения с design §2 — фиксация и правка
-  спеки до кода.
-- [ ] 2.2 `session-state.ts` + unit-тесты (design §7): owner-фильтр (репродукция
+  спеки до кода. — Выполнено 2026-11-02 (fusion-worker scout, вход 115k): факты
+  №1–7 подтверждены по dist с path:line; №8 частично: /fusion-команды
+  зарегистрированы и доступны в headless (dialogs null), чтение PI_FUSION_ON —
+  работа волны 2; живой запуск pi -p не гонялся (принято: живая проверка — 3.2).
+  Расхождений с design §2 не найдено — правка спеки не потребовалась.
+- [x] 2.2 `session-state.ts` + unit-тесты (design §7): owner-фильтр (репродукция
   «on в родителе → форк → off»), {enabled, source}, идемпотентность, изоляция,
-  ленивый restore, env-активация PI_FUSION_ON.
-- [ ] 2.3 `commands.ts`: turnFusion → session-state + appendEntry (без записи
+  ленивый restore, env-активация PI_FUSION_ON. — Выполнено 2026-11-02 (w22):
+  ActivationSource/SessionActivation, Map<sessionId>, applySessionStart
+  (restore→env-приоритет с немедленной on-записью), setSessionEnabled
+  (идемпотентность против лениво восстановленного), resetForTests; 20 тестов
+  зелёные; файл перенесён в test/ в 2.3.
+- [x] 2.3 `commands.ts`: turnFusion → session-state + appendEntry (без записи
   fusion.json; установка профилей сохраняется; идемпотентный on — реконсайл
   присутствия fusion_delegate); showStatus — флаг+source; идемпотентные сообщения;
   описания команд. FusionCommandDeps + fakes (design §5). Component-тесты §7.
-- [ ] 2.4 `index.ts` + `restrictions.ts` + `guidance.ts`: реконсайл session_start
+  — Выполнено 2026-11-02 (w23): сессионные обёртки в deps, идемпотентные
+  сообщения, showStatus флаг+source; тест перенесён в test/; пины переписаны
+  под session-fakes.
+- [x] 2.4 `index.ts` + `restrictions.ts` + `guidance.ts`: реконсайл session_start
   В ОБЕ СТОРОНЫ (restore до фильтра; on — гарантирует присутствие fusion_delegate);
   guard `runFusionDelegate` (index.ts:100) с текстом FR-004; шов isEnabled
   `(ctx) => boolean` с ленивым restore и по-гейтными отказами; собственный тип
   FusionGuidanceFacts; дочерние сессии без fusion-секции. Component-тесты §7
-  (fake sessionManager в makePi).
-- [ ] 2.5 `config.ts`/`config-bridge.ts`/`config-ui.ts`: исключение enabled из
+  (fake sessionManager в makePi). — Выполнено 2026-11-02 (w24): 190 тестов по
+  5 файлам; typecheck падал только на fanout-e2e (закрыто в 2.6).
+- [x] 2.5 `config.ts`/`config-bridge.ts`/`config-ui.ts`: исключение enabled из
   типа/defaults/snapshot/readFields/persist/bridge/ui; warn once per process;
-  файл не перезаписывается. Тесты миграции §7.
-- [ ] 2.6 Перепись пинов по перечню design §7 (command — включая :172–188;
+  файл не перезаписывается. Тесты миграции §7. — Выполнено 2026-11-02 (w25):
+  TDD красный 12/63 → зелёный 63/63; warn-миграция один раз на процесс.
+- [x] 2.6 Перепись пинов по перечню design §7 (command — включая :172–188;
   config/config-ui/config-bridge/tool-wiring — включая :59/:76; fanout-e2e —
   включая харнесс :93–97 и :149) + README.md (сессионная модель, миграция);
   полный прогон: `npm test` / `npm run typecheck` / `npm run lint` /
-  `npm run build` зелёные.
+  `npm run build` зелёные. — Выполнено 2026-11-02 (w26): харнесс fanout-e2e с
+  session-fake (on-запись владельца), литерал enabled убран, README переписан;
+  полные гейты зелёные.
 
 ## 3. Приёмка
 
-- [ ] 3.1 Независимое adversarial-ревью волны 2 (fresh, кросс-модель; ревьюер сам
+- [x] 3.1 Независимое adversarial-ревью волны 2 (fresh, кросс-модель; ревьюер сам
   прогоняет гейты; пробует опровергнуть изоляцию сессий, owner-фильтр форка,
-  ленивый restore) → ГОДЕН; коммит волны; сводка в bd.
+  ленивый restore) → ГОДЕН; коммит волны; сводка в bd. — Выполнено 2026-11-02
+  (run d9c4c973, opencode-go/beam-free, кросс-модель к пулу авторов): ГОДЕН,
+  ноль находок; собственные прогоны: npm test 667/667 (22 файла), typecheck/
+  lint/build exit 0; seam/pool/report/contract/briefs не тронуты; skip-тестов
+  нет. Остатки: живая приёмка 3.2 и риск §9 (два процесса — принято).
 - [ ] 3.2 Живая приёмка после перезапуска pi (design §8, все 7 пунктов, включая
   форк-кейс и headless PI_FUSION_ON); сводка в bd; отметить пункт.
 - [ ] 3.3 Архивация изменения БЕЗ sync (skip_specs, design §10) + закрытие эпика

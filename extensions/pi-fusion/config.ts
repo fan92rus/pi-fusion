@@ -19,8 +19,6 @@ import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
 
 /** Editable operator configuration, persisted as the pi agent dir's `fusion.json`. */
 export interface FusionConfig extends FanoutConfig {
-  /** Feature flag (§13): the fusion tool is active only when true. */
-  enabled: boolean;
   /** Delegate actions wait for explicit lead approval before workers run. */
   requireApproval: boolean;
   /** Tools removed from every fusion worker's active set. */
@@ -43,9 +41,8 @@ function frozenList(items: readonly string[]): string[] {
   return Object.freeze([...items]) as unknown as string[];
 }
 
-/** Design defaults (F01): disabled, width 3, 10 min per task, approval on. */
+/** Design defaults (F01): width 3, 10 min per task, approval on. Activation is per session, not here. */
 export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
-  enabled: false,
   workers: 3,
   maxParallel: 3,
   taskTimeoutMs: 600_000,
@@ -109,10 +106,15 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Set once per process: `enabled` is retired (fusion activation moved to the
+ * session), and config.ts is read several times per turn — one warning is enough.
+ */
+let retiredEnabledWarned = false;
+
 /** A fresh independent copy of the defaults or of a validated document. */
 function snapshot(config: FusionConfig): Readonly<FusionConfig> {
   return Object.freeze({
-    enabled: config.enabled,
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,
@@ -129,6 +131,12 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
   const warnField = (key: string): void => {
     console.warn(`[pi-fusion] ${path}: field "${key}" has an invalid value, keeping the default`);
   };
+  if (Object.hasOwn(fields, "enabled") && !retiredEnabledWarned) {
+    retiredEnabledWarned = true;
+    console.warn(
+      `[pi-fusion] ${path}: field "enabled" is retired and ignored; fusion is switched per session with /fusion on|off`,
+    );
+  }
   const number = (
     key: keyof FusionConfig,
     bound: { min: number; max: number },
@@ -171,7 +179,6 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
   };
   const defaults = FUSION_CONFIG_DEFAULTS;
   return {
-    enabled: flag("enabled", defaults.enabled),
     workers: number("workers", FUSION_CONFIG_BOUNDS.workers, defaults.workers),
     maxParallel: number("maxParallel", FUSION_CONFIG_BOUNDS.maxParallel, defaults.maxParallel),
     taskTimeoutMs: number(
@@ -229,7 +236,6 @@ export function persistFusionConfig(
   path: string = defaultFusionConfigPath(),
 ): void {
   const canonical = {
-    enabled: config.enabled,
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,

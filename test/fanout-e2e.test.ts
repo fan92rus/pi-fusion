@@ -71,6 +71,7 @@ function makeTasks(count: number) {
   }));
 }
 
+let e2eSessionCounter = 0;
 function setup(config: FusionConfig, withBus = true) {
   const fake = createFakePi();
   let tool: ToolDefinition | undefined;
@@ -88,11 +89,27 @@ function setup(config: FusionConfig, withBus = true) {
     setActiveTools: () => {},
   };
   registerFusionDelegate(api as unknown as ExtensionAPI, config);
+  const sid = `e2e-${++e2eSessionCounter}`;
+  const branch: any[] = [
+    {
+      type: "custom",
+      customType: "pi-fusion.activation",
+      data: { owner: sid, enabled: true, ts: 1 },
+    },
+  ];
+  const sessionManager = {
+    getSessionId: () => sid,
+    getBranch: () => branch,
+    appendEntry: (type: string, data: unknown) => {
+      branch.push({ type: "custom", customType: type, data });
+    },
+  };
   const execute = (params: unknown, signal?: AbortSignal) => {
     if (tool === undefined) throw new Error("fusion_delegate was not registered");
     return tool.execute("call-1", params, signal, undefined, {
       cwd: "/repo",
       signal,
+      sessionManager,
     } as unknown as ExtensionToolContext);
   };
   const fire = (event: string, payload?: unknown) => {
@@ -146,7 +163,6 @@ function asFanout(value: unknown): FanoutResult {
 
 const CONFIG: FusionConfig = {
   ...FUSION_CONFIG_DEFAULTS,
-  enabled: true,
   workers: 3,
   maxParallel: 3,
   taskTimeoutMs: 600_000,

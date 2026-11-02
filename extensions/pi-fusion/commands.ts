@@ -21,6 +21,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 // command persists whole snapshots, so dropping the approval/tool fields
 // would silently reset them (bd pi-fusion-chq review fix).
 import { FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
+import type { SessionActivation } from "./session-state.ts";
 import type { InstallWorkerAgentResult, RoleProfileStatus } from "./worker-install.ts";
 
 export interface FusionSubcommand {
@@ -113,6 +114,18 @@ export interface FusionCommandDeps {
    * of the menu module; only meaningful while `dialogs` is non-null.
    */
   interactiveConfig(): Promise<void>;
+  /** Session-only activation (session-state): read current {enabled, source}. */
+  getActivation(): SessionActivation;
+  /** Session-only activation: set enabled for this session (Map + appendEntry). */
+  setActivation(value: boolean): void;
+  /** Thin wrapper over pi.appendEntry for session history writes. */
+  appendEntry(type: string, data: unknown): void;
+  /** Readonly-ish handle of the current session (id + branch + append). */
+  sessionManager: {
+    getSessionId(): string;
+    getBranch(): ReadonlyArray<{ type?: string; customType?: string; data?: unknown }>;
+    appendEntry(type: string, data: unknown): void;
+  };
 }
 
 /** The completions for the argument being typed; derived from FUSION_SUBCOMMANDS. */
@@ -206,14 +219,28 @@ export function registerFusionCommand(
  * `/fusion config` through the exact subcommand path (config-ui.ts).
  */
 export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
-  deps.persistConfig({ ...deps.loadConfig(), enabled });
   const active = deps.getActiveTools();
   const has = active.includes(deps.toolName);
-  if (enabled && !has) deps.setActiveTools([...active, deps.toolName]);
-  if (!enabled && has) deps.setActiveTools(active.filter((name) => name !== deps.toolName));
+  const current = deps.getActivation();
+  const idempotent = current.enabled === enabled;
   if (!enabled) {
-    deps.notify("fusion: off.");
+    // Idempotent off: no new history record.
+    if (idempotent) {
+      if (has) deps.setActiveTools(active.filter((name) => name !== deps.toolName));
+      deps.notify("fusion уже выключен в этой сессии");
+      return;
+    }
+    deps.setActivation(false);
+    if (has) deps.setActiveTools(active.filter((name) => name !== deps.toolName));
+    deps.notify(
+      "fusion: off.\nРешение сохранено в истории этой сессии; восстанавливается при resume/reload; другие сессии не затрагиваются.",
+    );
     return;
+  }
+  // Reconcile tool presence (FR-004a): add if missing, even when idempotent.
+  if (!has) deps.setActiveTools([...active, deps.toolName]);
+  if (!idempotent) {
+    deps.setActivation(true);
   }
   // B6 (design §4.6): install whenever ANY manifest profile is absent or
   // stale — an existsSync-on-the-worker-only check missed stale profiles
@@ -227,10 +254,13 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
           .roleProfileStatuses()
           .map((row) => ({ name: row.name, outcome: row.status, path: row.path }));
   const lines = results.map((result) => `  ${result.name}: ${result.outcome} @ ${result.path}`);
-  deps.notify(`fusion: on.\n${lines.join("\n")}`);
+  deps.notify(
+    `fusion: on.\n${lines.join("\n")}\nРешение сохранено в истории этой сессии; восстанавливается при resume/reload; другие сессии не затрагиваются.`,
+  );
 }
 
 function showStatus(deps: FusionCommandDeps): void {
+  const activation = deps.getActivation();
   const config = deps.loadConfig();
   const models = config.workerModels;
   const modelList =
@@ -243,7 +273,7 @@ function showStatus(deps: FusionCommandDeps): void {
     .join("\n");
   deps.notify(
     [
-      `fusion: ${config.enabled ? "on" : "off"}`,
+      `fusion: ${activation.enabled ? "on" : "off"} (enabled: ${activation.enabled}, source: ${activation.source})`,
       profiles,
       `researcherWeb: ${config.researcherWeb}`,
       `lead gate: ${config.leadBlockedTools.join(", ")}`,

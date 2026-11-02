@@ -37,6 +37,12 @@ import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
 import { createFanoutSeamClient } from "./seam/client.ts";
 import {
+  applySessionStart,
+  getSessionActivation,
+  isSessionEnabled,
+  setSessionEnabled,
+} from "./session-state.ts";
+import {
   type FanoutResult,
   FanoutResultSchema,
   type ResearcherWebMode,
@@ -111,6 +117,22 @@ async function runFusionDelegate(
       `fusion_delegate refused: ${validation.error.reason} (offender: ${validation.error.offender})`,
     );
   }
+  // Session-only activation (FR-004б/в): independent guard.
+  const sessionManager = (
+    ctx as { sessionManager?: { getSessionId(): string; getBranch(): unknown } }
+  ).sessionManager;
+  if (!sessionManager) {
+    return refusal("fusion выключен в этой сессии — включите /fusion on");
+  }
+  let sessionEnabled = false;
+  try {
+    sessionEnabled = isSessionEnabled(sessionManager as never);
+  } catch {
+    return refusal("не удалось восстановить состояние сессии");
+  }
+  if (!sessionEnabled) {
+    return refusal("fusion выключен в этой сессии — включите /fusion on");
+  }
   // Esc (design §8) is handled inside the pool: runFanout's abort listener
   // sends :cancel to every in-flight child through the seam client
   // (cancelAllPending), then disposes it — pending runs resolve cancelled.
@@ -144,7 +166,7 @@ async function runFusionDelegate(
  */
 export function registerFusionDelegate(
   pi: ExtensionAPI,
-  config: (FanoutConfig & { enabled: boolean }) | (() => FanoutConfig & { enabled: boolean }),
+  config: FanoutConfig | (() => FanoutConfig),
 ): void {
   const readConfig = typeof config === "function" ? config : () => config;
   // The operator's request that started the run (atomic-agent
@@ -190,15 +212,36 @@ export function registerFusionDelegate(
       return runFusionDelegate(pi, readConfig(), params, signal, ctx, originalRequest);
     },
   });
-  pi.on("session_start", (event) => {
+  pi.on("session_start", (event, ctx) => {
     // Defensive reset against instance reuse across sessions: in the real
     // host every new/resume/fork/reload builds a fresh closure (so the
     // request starts empty anyway), and a reload loses the captured prompt
     // just the same. Keeping it on "reload" costs nothing and documents the
     // intent: only a genuinely new conversation clears the quote.
     if (event?.reason !== "reload") originalRequest = undefined;
-    if (!readConfig().enabled) {
-      pi.setActiveTools(pi.getActiveTools().filter((name) => name !== FUSION_TOOL_NAME));
+    const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
+    if (sm) {
+      try {
+        applySessionStart(pi, sm as never);
+      } catch {
+        // restore failure: leave reconciliation below to handle (off).
+      }
+    }
+    // Reconcile presence both ways (FR-004а).
+    const active = pi.getActiveTools();
+    const has = active.includes(FUSION_TOOL_NAME);
+    let enabled = false;
+    if (sm) {
+      try {
+        enabled = isSessionEnabled(sm as never);
+      } catch {
+        enabled = false;
+      }
+    }
+    if (!enabled) {
+      if (has) pi.setActiveTools(active.filter((name) => name !== FUSION_TOOL_NAME));
+    } else {
+      if (!has) pi.setActiveTools([...active, FUSION_TOOL_NAME]);
     }
   });
 }
@@ -227,6 +270,7 @@ function makeFusionCommandDeps(
   // ctx.ui is a structural superset of FusionUIDialogs; null when the run
   // mode has no dialog-capable UI (headless — /fusion config refuses).
   const dialogs = ctx.hasUI ? ctx.ui : null;
+  const sessionManager = ctx.sessionManager;
   const deps: FusionCommandDeps = {
     toolName: FUSION_TOOL_NAME,
     loadConfig: () => loadFusionConfig(configPath),
@@ -245,6 +289,10 @@ function makeFusionCommandDeps(
       if (!dialogs) return Promise.resolve();
       return interactiveFusionConfig(deps, dialogs);
     },
+    getActivation: () => getSessionActivation(sessionManager as never),
+    setActivation: (value) => setSessionEnabled(pi, sessionManager as never, value),
+    appendEntry: (type, data) => pi.appendEntry(type, data),
+    sessionManager: sessionManager as never,
   };
   return deps;
 }
@@ -259,7 +307,25 @@ export default function fusionExtension(
 ): void {
   const startup = loadFusionConfig(options.configPath);
   registerFusionDelegate(pi, () => loadFusionConfig(options.configPath));
-  registerFusionGuidance(pi, () => loadFusionConfig(options.configPath));
+  registerFusionGuidance(pi, (ctx) => {
+    const config = loadFusionConfig(options.configPath);
+    const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
+    let enabled = false;
+    if (sm) {
+      try {
+        enabled = isSessionEnabled(sm as never);
+      } catch {
+        enabled = false;
+      }
+    }
+    return {
+      enabled,
+      workers: config.workers,
+      maxParallel: config.maxParallel,
+      taskTimeoutMs: config.taskTimeoutMs,
+      workerModels: config.workerModels,
+    };
+  });
   registerFusionCommand(pi, (ctx) => makeFusionCommandDeps(pi, ctx, options));
   // F19: while fusion is on, the lead session cannot call its own
   // write/edit/bash — the doing belongs to the workers. isEnabled is read
@@ -267,7 +333,11 @@ export default function fusionExtension(
   // blocked list binds the startup leadBlockedTools (the command never edits
   // that field).
   registerLeadRestrictions(pi, {
-    isEnabled: () => loadFusionConfig(options.configPath).enabled,
+    isEnabled: (ctx) => {
+      const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
+      if (!sm) return false; // inert
+      return isSessionEnabled(sm as never); // may throw -> fail-closed in restrictions
+    },
     blockedTools: startup.leadBlockedTools,
   });
 }

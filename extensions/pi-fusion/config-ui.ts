@@ -4,19 +4,14 @@
  * select loop whose title always re-renders the current fusion.json values,
  * so the operator sees what they are about to change and what changed after
  * every edit. Numbers are validated against the same FUSION_CONFIG_BOUNDS
- * config.ts enforces on load, lists parse with the same rule as
- * `/fusion model`, and the on/off flip reuses the command's turnFusion, so
- * the menu cannot drift from the subcommands.
+ * config.ts enforces on load, and lists parse with the same rule as
+ * `/fusion model`. The menu edits only the shared fusion.json settings: the
+ * session's on/off activation is neither shown nor changed here (`/fusion on|off`).
  *
  * Localized: auto-detects Russian locale (ru-RU) and shows Russian UI.
  */
 
-import {
-  type FusionCommandDeps,
-  type FusionUIDialogs,
-  parsePositiveInt,
-  turnFusion,
-} from "./commands.ts";
+import { type FusionCommandDeps, type FusionUIDialogs, parsePositiveInt } from "./commands.ts";
 import { FUSION_CONFIG_BOUNDS, FUSION_CONFIG_DEFAULTS, type FusionConfig } from "./config.ts";
 
 // ─── i18n ────────────────────────────────────────────────────────────────────
@@ -43,14 +38,6 @@ const L = {
     ? "Введите новое значение (пусто — отмена):"
     : "Enter a new value (blank = cancel):",
   invalid: RU ? "Неверное значение" : "Invalid value",
-  turnOn: RU ? "✅ Включить" : "✅ Turn on",
-  turnOff: RU ? "⬛ Выключить" : "⬛ Turn off",
-  modeOn: RU ? "⚡ Режим fusion: включён" : "⚡ Fusion mode: on",
-  modeOff: RU ? "⚡ Режим fusion: выключен" : "⚡ Fusion mode: off",
-  modeTitle: RU ? "Режим fusion" : "Fusion mode",
-  modeDescription: RU
-    ? "Включение добавляет fusion_delegate в активные инструменты и при необходимости ставит воркер-агента; выключение убирает инструмент."
-    : "Turning on adds fusion_delegate to the active tools and installs the worker agent if missing; turning off removes the tool.",
   researcherWebTitle: RU ? "Состав веб-инструментов researcher" : "Researcher web composition",
   researcherWebDescription: RU
     ? "Ровно один профиль researcher соответствует составу; запуск с составом шире окружения честно падает preflight'ом. Дефолт none; both подтверждён live-смоуком."
@@ -88,8 +75,6 @@ const CLEAR_PATTERN = /^(clear|очистить)$/i;
 export const MENU_ACTIONS = {
   done: L.done,
   back: L.back,
-  turnOn: L.turnOn,
-  turnOff: L.turnOff,
   approvalRequired: L.approvalRequired,
   approvalOptional: L.approvalOptional,
 } as const;
@@ -110,7 +95,7 @@ type NumberKey = (typeof NUMBER_KEYS)[number];
 const LIST_KEYS = ["workerModels", "blockedTools", "leadBlockedTools"] as const;
 type ListKey = (typeof LIST_KEYS)[number];
 
-type MenuItemId = "enabled" | "approval" | "researcherWeb" | NumberKey | ListKey;
+type MenuItemId = "approval" | "researcherWeb" | NumberKey | ListKey;
 
 export type { MenuItemId };
 
@@ -212,7 +197,6 @@ function joinOr(items: string[], fallback: string): string {
 /** One line per setting — the snapshot the menu title and the notices render. */
 export function formatCurrent(config: FusionConfig): string {
   return [
-    `  ${RU ? "режим" : "mode"}: ${config.enabled ? (RU ? "вкл" : "on") : RU ? "выкл" : "off"}`,
     `  workers: ${config.workers} (maxParallel ${config.maxParallel})`,
     `  ${RU ? "модели" : "models"}: ${joinOr(config.workerModels, LIST_SPECS.workerModels.empty)}`,
     `  timeout: ${config.taskTimeoutMs} ms (${humanMs(config.taskTimeoutMs)})`,
@@ -243,7 +227,6 @@ export function fusionMenuItems(config: FusionConfig): MenuItem[] {
   const listLabel = (spec: ListSpec): string =>
     `${spec.label} — ${joinOr(config[spec.key], spec.empty)}`;
   return [
-    { id: "enabled", label: config.enabled ? L.modeOn : L.modeOff },
     { id: "workerModels", label: listLabel(LIST_SPECS.workerModels) },
     { id: "workers", label: numberLabel(NUMBER_SPECS.workers) },
     { id: "maxParallel", label: numberLabel(NUMBER_SPECS.maxParallel) },
@@ -264,27 +247,6 @@ function menuTitle(config: FusionConfig): string {
 }
 
 // ─── Editors ─────────────────────────────────────────────────────────────────
-
-async function editEnabled(
-  deps: FusionCommandDeps,
-  dialogs: FusionUIDialogs,
-  config: FusionConfig,
-): Promise<void> {
-  const choice = await dialogs.select(`${L.modeTitle}\n\n${L.modeDescription}`, [
-    L.turnOn,
-    L.turnOff,
-    L.back,
-  ]);
-  if (!choice || choice === L.back) return;
-  const enable = choice === L.turnOn;
-  if (config.enabled === enable) {
-    deps.notify(L.noChange, "info");
-    return;
-  }
-  // turnFusion persists `enabled` and moves the tool in or out of the active
-  // set (installing the worker agent when needed) — the exact subcommand path.
-  turnFusion(deps, enable);
-}
 
 async function editResearcherWeb(
   deps: FusionCommandDeps,
@@ -438,8 +400,7 @@ export async function interactiveFusionConfig(
     try {
       const item = items.find((entry) => entry.label === choice);
       if (!item) continue;
-      if (item.id === "enabled") await editEnabled(deps, dialogs, config);
-      else if (item.id === "researcherWeb") await editResearcherWeb(deps, dialogs, config);
+      if (item.id === "researcherWeb") await editResearcherWeb(deps, dialogs, config);
       else if (item.id === "approval") await editApproval(deps, dialogs, config);
       else if (isNumberKey(item.id)) await editNumber(deps, dialogs, NUMBER_SPECS[item.id], config);
       else if (isListKey(item.id)) await editList(deps, dialogs, LIST_SPECS[item.id], config);

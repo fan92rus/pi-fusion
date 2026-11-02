@@ -1,7 +1,8 @@
 spec: fusion-session-activation
-state: rev.4 ЗАМОРОЖЕНА — ревью 1.1 сошлось (раунды 1–5 закрывали находки; раунд 6 — pass без находок, run e32c9032); утверждение владельца 1.2: OQ-A «A», OQ-B «B», OQ-C «C — для pi -p нужен способ включения» → env PI_FUSION_ON (FR-008: restore-first, env только без своих записей, явный off выигрывает, пустое=не задана); задачи 1.1/1.2 закрыты; реализация (волна 2) не начата
-next: волна 2 — 2.1 живая сверка API pi (scout, read-only) → 2.2 session-state → 2.3 commands → 2.4 index/restrictions/guidance → 2.5 config-тройка → 2.6 пины+README+полные гейты; затем 3.1 adversarial-ревью волны, 3.2 живая приёмка (7 пунктов, после перезапуска), 3.3 архивация
+state: волна 2 РЕАЛИЗОВАНА и принята ревью 3.1 (2026-11-02, вечер) — session-only активация: session-state.ts (Map<sessionId>, owner-фильтр, getBranch-restore, env PI_FUSION_ON restore-first с немедленной on-записью), commands/index/restrictions/guidance/config-тройка сессионные, enabled исключён из FusionConfig (warn once + ignore, файл не переписывается), README переписан; задачи 2.1–2.6 и 3.1 закрыты; ревью 3.1 ГОДЕН без находок (run d9c4c973, opencode-go/beam-free, кросс-модель; собственные прогоны: 667/667 тестов, 22 файла, typecheck/lint/build exit 0)
+next: 3.2 живая приёмка после перезапуска pi (design §8, 7 пунктов: изоляция сессий, resume/reload restore, форк off, отказ fusion_delegate при off, fusion.json не меняется, PI_FUSION_ON=1 headless, не-булево значение → warn) — требует перезапуска pi, затем 3.3 архивация без sync + закрытие эпика pi-fusion-pu9
 epic-bd: pi-fusion-pu9
-decisions-input: владелец 2026-11-02 08:59 (session-only, без автозапуска), 11:24 (память сессии), 11:45 (отдельное изменение), 1.2-утверждение A/B/C-с-правкой (env PI_FUSION_ON)
-review-models: раунды 1–2 anthropic/claude-haiku-5-5; раунды 3–6 opencode-go/beam-free (по указанию владельца; стабильно, вердикты точные; раунд 6 потребовал стера — grep -rl по node_modules, брошен по стеру)
-stability-note: fusion_delegate живой после перезапуска pi — пробы 2026-11-02: одиночная задача 7с; параллель 3/3 за 95с; scout с sources 14с; невалидная роль — чистый schema-отказ; очередь 6/6 за 103с (maxParallel 4, две волны)
+decisions-input: владелец 2026-11-02 08:59 (session-only), 11:24 (память сессии), 11:45 (отдельное изменение), 1.2-утверждение A/B/C (PI_FUSION_ON)
+review-models: док-ревью — раунды 1–2 claude-haiku-5-5, 3–6 beam-free; код-ревью 3.1 — beam-free (кросс-модель к пулу авторов haiku/glm-flash)
+wave-execution: fusion_delegate (пул: 2 воркера параллельно 2.2+2.5 → 2.3 → 2.4 → 2.6), стаб-пробы обёртки 7/7 зелёные тем же вечером
+residuals: §9 (два процесса над одной историей — принято владельцем); живой pi -p не гонялся (проверка в 3.2)

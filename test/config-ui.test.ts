@@ -45,6 +45,10 @@ function makeDeps(config?: Partial<FusionConfig>) {
     },
     dialogs: null,
     interactiveConfig: async () => {},
+    getActivation: () => ({ enabled: false, source: "default-off" }),
+    setActivation: () => {},
+    appendEntry: () => {},
+    sessionManager: { getSessionId: () => "s", getBranch: () => [], appendEntry: () => {} },
   };
   return {
     deps,
@@ -177,24 +181,23 @@ describe("interactiveFusionConfig", () => {
     expect(host.config().workerModels).toEqual(FUSION_CONFIG_DEFAULTS.workerModels);
   });
 
-  it("flips fusion on through the subcommand path: tool in, agent installed", async () => {
-    const host = makeDeps({ enabled: false });
-    const enabled = labelFor(host.config(), "enabled");
-    await interactiveFusionConfig(host.deps, scriptedDialogs([enabled, MENU_ACTIONS.turnOn, DONE]));
-    expect(host.config().enabled).toBe(true);
-    expect(host.active()).toContain("fusion_delegate");
-    expect(host.persisted()).toBe(1);
+  it("has no activation row: the menu omits enabled and the snapshot omits the mode line", () => {
+    const host = makeDeps();
+    const ids = fusionMenuItems(host.config()).map((item) => item.id);
+    expect(ids).not.toContain("enabled");
+    expect(formatCurrent(host.config())).not.toMatch(/^\s*(mode|режим):/m);
   });
 
-  it("keeps the mode unchanged when the same state is picked", async () => {
-    const host = makeDeps({ enabled: false });
-    const enabled = labelFor(host.config(), "enabled");
+  it("never changes the session's tool activation, even while editing settings", async () => {
+    const host = makeDeps();
+    const workers = labelFor(host.config(), "workers");
+    const approval = labelFor(host.config(), "approval");
     await interactiveFusionConfig(
       host.deps,
-      scriptedDialogs([enabled, MENU_ACTIONS.turnOff, DONE]),
+      scriptedDialogs([workers, approval, MENU_ACTIONS.approvalOptional, DONE], ["4"]),
     );
-    expect(host.persisted()).toBe(0);
-    expect(host.config().enabled).toBe(false);
+    expect(host.config().workers).toBe(4);
+    expect(host.active()).toEqual(["read", "bash"]);
   });
 
   it("toggles the approval requirement off", async () => {

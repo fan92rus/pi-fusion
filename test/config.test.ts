@@ -33,7 +33,6 @@ const ENV_KEYS = ["PI_CODING_AGENT_DIR", "HOME", "USERPROFILE"] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
 
 const CUSTOM: FusionConfig = {
-  enabled: true,
   workers: 5,
   maxParallel: 4,
   taskTimeoutMs: 120_000,
@@ -110,7 +109,6 @@ describe("config: fusion.json load/persist", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const path = join(dir, "missing.json");
       expect(loadFusionConfig(path)).toEqual({
-        enabled: false,
         workers: 3,
         maxParallel: 3,
         taskTimeoutMs: 600_000,
@@ -158,7 +156,6 @@ describe("config: fusion.json load/persist", () => {
           ...CUSTOM,
           workers: 7,
           maxParallel: 99,
-          enabled: "yes",
           workerModels: ["m", ""],
         }),
       );
@@ -166,7 +163,6 @@ describe("config: fusion.json load/persist", () => {
         ...CUSTOM,
         workers: 7,
         maxParallel: FUSION_CONFIG_DEFAULTS.maxParallel,
-        enabled: FUSION_CONFIG_DEFAULTS.enabled,
         workerModels: FUSION_CONFIG_DEFAULTS.workerModels,
       });
     });
@@ -180,7 +176,6 @@ describe("config: fusion.json load/persist", () => {
       ["taskTimeoutMs", 3_600_001],
       ["maxSteps", 0],
       ["maxSteps", 10_001],
-      ["enabled", "yes"],
       ["requireApproval", 1],
       ["workerModels", "m"],
       ["workerModels", ["m", ""]],
@@ -227,6 +222,35 @@ describe("config: fusion.json load/persist", () => {
     });
   });
 
+  describe("retired enabled field", () => {
+    it("warns once per process, ignores the value and never rewrites the file", async () => {
+      // Fresh module instance: the once-per-process flag is module state.
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const original = JSON.stringify({ ...CUSTOM, enabled: true }, null, 2);
+      const path = write(original);
+      const first = fresh.loadFusionConfig(path);
+      fresh.loadFusionConfig(path);
+      fresh.loadFusionConfig(path);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toBe(
+        `[pi-fusion] ${path}: field "enabled" is retired and ignored; fusion is switched per session with /fusion on|off`,
+      );
+      expect(first).not.toHaveProperty("enabled");
+      expect(first).toEqual(CUSTOM);
+      expect(readFileSync(path, "utf8")).toBe(original);
+    });
+
+    it("stays silent for files that carry no enabled field", async () => {
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      fresh.loadFusionConfig(write(JSON.stringify(CUSTOM)));
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
+
   describe("persistFusionConfig", () => {
     it("round-trips load -> persist -> load", () => {
       const path = join(dir, "fusion.json");
@@ -237,7 +261,7 @@ describe("config: fusion.json load/persist", () => {
     it("replaces the previous file wholesale and leaves no temporary files", () => {
       const path = join(dir, "fusion.json");
       persistFusionConfig(CUSTOM, path);
-      const second: FusionConfig = { ...CUSTOM, workers: 2, enabled: false };
+      const second: FusionConfig = { ...CUSTOM, workers: 2 };
       persistFusionConfig(second, path);
       expect(loadFusionConfig(path)).toEqual(second);
       expect(readdirSync(dir)).toEqual(["fusion.json"]);
@@ -249,7 +273,6 @@ describe("config: fusion.json load/persist", () => {
       const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
       expect(Object.keys(onDisk).sort()).toEqual([
         "blockedTools",
-        "enabled",
         "leadBlockedTools",
         "maxParallel",
         "maxSteps",
@@ -261,6 +284,13 @@ describe("config: fusion.json load/persist", () => {
       ]);
     });
 
+    it("never writes enabled, even when handed a legacy object that carries it", () => {
+      const path = join(dir, "fusion.json");
+      persistFusionConfig({ ...CUSTOM, enabled: true } as FusionConfig, path);
+      const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      expect(onDisk).not.toHaveProperty("enabled");
+    });
+
     it("creates missing agent directories", () => {
       const path = join(dir, "nested", "agent", "fusion.json");
       persistFusionConfig(FUSION_CONFIG_DEFAULTS, path);
@@ -268,10 +298,10 @@ describe("config: fusion.json load/persist", () => {
     });
 
     it("keeps the previous file intact and removes the temp file when the rename fails", () => {
-      const path = write(JSON.stringify({ enabled: true }));
+      const path = write(JSON.stringify({ workers: 9 }));
       renameState.fail = true;
       expect(() => persistFusionConfig(FUSION_CONFIG_DEFAULTS, path)).toThrow("disk gone");
-      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ enabled: true });
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ workers: 9 });
       expect(readdirSync(dir)).toEqual(["fusion.json"]);
     });
   });

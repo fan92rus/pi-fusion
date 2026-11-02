@@ -387,9 +387,9 @@ const SHELL_CAUSE: Record<Exclude<ShellSettingsVerdict, "stock">, string> = {
   unresolvable: "каталог настроек агента не определяется",
 };
 
-/** The refusal reason when a disabling verdict meets a classified branch (design §6.5.3, §6.7): perl and bd texts are separate. */
+/** The refusal reason when a disabling verdict meets a classified branch (design §6.5.3, §6.7): perl, bd and git texts are separate. */
 function shellRefusal(
-  branch: "perl" | "bd",
+  branch: "perl" | "bd" | "git",
   verdict: Exclude<ShellSettingsVerdict, "stock">,
 ): string {
   return `${SHELL_CAUSE[verdict]} — исключение ${branch} отключено`;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GIT_RULES } from "../extensions/pi-fusion/lead-access.ts";
 import {
   BARREN_DELEGATION_LIMIT,
   emptyLeadRestrictionState,
@@ -1470,5 +1471,113 @@ describe("lead restrictions: the design §6.7 refusal texts are byte-exact (task
     expect(causeOf(bash("bd list", { homedir: () => "" }))).toBe(
       "каталог настроек агента не определяется — исключение bd отключено",
     );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* git gate at the bash gate (fusion-git-gate; design §1, §2, FR-006)  */
+/* ------------------------------------------------------------------ */
+
+const GIT_NOT_SINGLE = "Причина исключения: не одиночный вызов git — ";
+const CUSTOM_GIT =
+  "оболочка не POSIX-совместима (задан shellPath или префикс) — исключение git отключено";
+
+/** The table reason of one git subcommand row (design §2). */
+function gitRuleReason(sub: string): string {
+  const rule = GIT_RULES.find((row) => row.sub === sub);
+  if (rule === undefined) throw new Error(`no GIT_RULES row for ${sub}`);
+  return rule.reason;
+}
+
+describe("lead restrictions: bash git gate allows ordinary git on a stock install (design §2, FR-002)", () => {
+  it.each([
+    "git status",
+    "git log --oneline -5",
+    "git diff --cached",
+    "git add extensions/a.ts",
+    "git add .",
+    'git commit -m "feat: x"',
+    "git commit -a -m x",
+    "git push origin main",
+    "git push -u origin main",
+    "git pull --rebase",
+    "git fetch origin",
+    "git checkout -b feat",
+    "git switch -c feat",
+    "git stash list",
+    "git remote -v",
+    "git restore --staged f",
+    "git worktree list",
+    "git merge --no-edit main",
+  ])("%s passes", (command) => {
+    expect(bash(command)).toBeUndefined();
+  });
+});
+
+describe("lead restrictions: bash git gate refuses with the table reason (design §2, FR-003..FR-005)", () => {
+  it.each([
+    ["git push --force origin main", "push"],
+    ["git push origin +main", "push"],
+    ["git push origin :main", "push"],
+    ["git reset --hard", "reset"],
+    ["git checkout -f main", "checkout"],
+    ["git clean -fd", "clean"],
+    ["git branch -D x", "branch"],
+    ["git commit --amend -m x", "commit"],
+    ["git commit", "commit"],
+    ["git rebase -i HEAD", "rebase"],
+    ["git rm x", "rm"],
+  ])("%s names the %s row", (command, sub) => {
+    expect(bashReason(command)).toContain(`${GIT_NOT_SINGLE}${gitRuleReason(sub)}`);
+  });
+
+  it("a chain, a substitution or a global option keeps the classifier's reason", () => {
+    expect(bashReason("git status; rm -rf x")).toContain(
+      `${GIT_NOT_SINGLE}метасимвол ";" вне кавычек`,
+    );
+    expect(bashReason("git status $(id)")).toContain(`${GIT_NOT_SINGLE}метасимвол "$" вне кавычек`);
+    expect(bashReason("git -C /tmp status")).toContain(
+      `${GIT_NOT_SINGLE}глобальные опции git до подкоманды запрещены`,
+    );
+  });
+});
+
+describe("lead restrictions: a non-stock shell disables the git classification (design §6.5.3 pattern)", () => {
+  it("a replica shellPath refuses git with the git text, even for an allowed form", () => {
+    const seams = { readFile: bdFs({ [BD_REPLICA]: BD_SHELL }) };
+    expect(bashReason("git status", seams)).toContain(`Причина исключения: ${CUSTOM_GIT}`);
+  });
+
+  it("a stock shell lets the same allowed git call through", () => {
+    expect(bash("git status", { readFile: bdFs({ [BD_REPLICA]: BD_STOCK }) })).toBeUndefined();
+  });
+});
+
+describe("lead restrictions: the git gate is inert when fusion is off or in a child (FR-006)", () => {
+  it("a child worker passes a forbidden git call", () => {
+    expect(
+      gateCall("bash", { command: "git push --force origin main" }, {}, () => false),
+    ).toBeUndefined();
+  });
+
+  it("fusion off passes a forbidden git call", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, {
+      isEnabled: () => false,
+      isLeadSession: () => true,
+      projectRoot: () => "/proj",
+      shellSettingsContext: () => hermeticShell(),
+    });
+    const verdict = host.fire(
+      "tool_call",
+      {
+        type: "tool_call",
+        toolCallId: "c1",
+        toolName: "bash",
+        input: { command: "git push --force origin main" },
+      },
+      { cwd: "/proj" },
+    );
+    expect(verdict).toBeUndefined();
   });
 });

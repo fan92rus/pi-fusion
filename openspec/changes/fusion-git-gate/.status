@@ -1,0 +1,4 @@
+spec: fusion-git-gate
+state: rev.7 — канонизация токенов в GIT_RULES, requireAny по флагам, +refspec/--exec/--receive-pack/--upload-pack/submodule foreach; раунды ревью 1–5 НЕ ГОДЕН; решения владельца OQ-2..OQ-6 зафиксированы (OQ-6 — residual R-6, checkout без -- разрешён)
+next: ревью раунда 6 (run 4abc19d3, beam-free) → при ГОДЕН 2.1 red → 2.2 green → 3.1 опровергающее ревью → 3.2 коммит/push → 3.3 живая приёмка
+parent-change: fusion-lead-subagent-block (не меняет его), образец — bd/perl в lead-access.ts

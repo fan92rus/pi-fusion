@@ -435,10 +435,369 @@ export function isSingleBdInvocation(command: string): BdVerdict {
   return { ok: true };
 }
 
-/** The bash branch the gate takes (design §6.5.1): perl, bd, or neither. */
+/** The git classifier's verdict (design §2): allowed, or the reason it is refused. */
+export type GitVerdict = CommandVerdict;
+
+/**
+ * One row of the git denylist (design §2, FR-002..FR-005). Matching is case-sensitive.
+ * The denylist is closed: a subcommand or form without a matching row is allowed.
+ */
+export interface GitRule {
+  /** The subcommand the row covers (argv[1]). */
+  readonly sub: string;
+  /** The refusal reason every match of this row carries. */
+  readonly reason: string;
+  /** The whole subcommand is refused, whatever its arguments (design §2 step 5). */
+  readonly refuseAll?: true;
+  /** Short letters (`-f`), long names (`--force`) and bare words (`drop`) that refuse. */
+  readonly forbid?: readonly string[];
+  /** Raw-token prefixes that refuse (`+` refspec, `:` deletion). */
+  readonly forbidPrefix?: readonly string[];
+  /** At least one of these FLAGS must be present; values and arguments after `--` do not count. */
+  readonly requireAny?: readonly string[];
+  /** argv[2] must be one of these words (the `notes` action). */
+  readonly requireAction?: readonly string[];
+  /** Options that consume the next token, or the rest of their cluster, as their value. */
+  readonly valueOpts?: readonly string[];
+  /** Long names exempt from prefix matching against `forbid` (`--all` vs `--allow-empty`). */
+  readonly allowLong?: readonly string[];
+}
+
+const GIT_WHOLE_REASON = (sub: string, why: string): string => `${sub} запрещён целиком: ${why}`;
+
+/** The git denylist (design §2). Rows are normative; tests are generated from them (design §3). */
+export const GIT_RULES: readonly GitRule[] = [
+  {
+    sub: "push",
+    reason: "push с force, удалением ref, +refspec, обходом хуков или удалённой командой запрещён",
+    forbid: [
+      "-f",
+      "--force",
+      "--force-with-lease",
+      "--force-if-includes",
+      "-d",
+      "--delete",
+      "--mirror",
+      "--prune",
+      "--all",
+      "--no-verify",
+      "-n",
+      "--receive-pack",
+      "--exec",
+    ],
+    forbidPrefix: ["+", ":"],
+    valueOpts: ["--receive-pack", "--exec"],
+  },
+  {
+    sub: "pull",
+    reason: "pull с force, prune или +refspec запрещён",
+    forbid: ["-f", "--force", "-p", "--prune", "--prune-tags", "--upload-pack"],
+    forbidPrefix: ["+"],
+    valueOpts: ["--upload-pack"],
+  },
+  {
+    sub: "fetch",
+    reason: "fetch с force, prune или +refspec запрещён",
+    forbid: ["-f", "--force", "-p", "--prune", "--prune-tags", "--upload-pack"],
+    forbidPrefix: ["+"],
+    valueOpts: ["--upload-pack"],
+  },
+  {
+    sub: "reset",
+    reason: "reset --hard, --merge, --keep и интерактивный -p запрещены",
+    forbid: ["--hard", "--merge", "--keep", "-p", "--patch"],
+  },
+  {
+    sub: "checkout",
+    reason: "checkout с force, -B, --discard-changes, путём (--) или -p запрещён",
+    forbid: ["-f", "--force", "-B", "--discard-changes", "--", "-p", "--patch"],
+    valueOpts: ["-b", "-B", "-c", "-C", "--orphan"],
+  },
+  {
+    sub: "switch",
+    reason: "switch с force, -C или --discard-changes запрещён",
+    forbid: ["-f", "--force", "-C", "--force-create", "--discard-changes"],
+    valueOpts: ["-c", "-C", "--create", "--force-create"],
+  },
+  {
+    sub: "restore",
+    reason: "restore без --staged или с --worktree и -p запрещён",
+    forbid: ["--worktree", "-W", "-p", "--patch"],
+    requireAny: ["--staged", "-S"],
+    valueOpts: ["-s", "--source"],
+  },
+  {
+    sub: "clean",
+    reason: "clean без -n/--dry-run или с -i запрещён",
+    forbid: ["-i", "--interactive"],
+    requireAny: ["-n", "--dry-run"],
+    valueOpts: ["-e", "--exclude"],
+  },
+  {
+    sub: "stash",
+    reason: "stash drop, clear, pop и -p запрещены",
+    forbid: ["drop", "clear", "pop", "-p", "--patch"],
+  },
+  {
+    sub: "worktree",
+    reason: "worktree remove, prune и force запрещены",
+    forbid: ["remove", "prune", "-f", "--force"],
+  },
+  {
+    sub: "submodule",
+    reason: "submodule с -f/--force и foreach запрещён",
+    forbid: ["-f", "--force", "foreach"],
+  },
+  {
+    sub: "branch",
+    reason: "удаление и принудительное изменение веток запрещены",
+    forbid: ["-d", "-D", "--delete", "-f", "--force", "-M", "-C"],
+  },
+  {
+    sub: "tag",
+    reason: "удаление и force тегов запрещены",
+    forbid: ["-d", "--delete", "-f", "--force"],
+  },
+  {
+    sub: "remote",
+    reason: "remote remove, rm, set-url, prune и rename запрещены",
+    forbid: ["remove", "rm", "set-url", "prune", "rename"],
+  },
+  {
+    sub: "symbolic-ref",
+    reason: "удаление symbolic-ref запрещено",
+    forbid: ["-d", "--delete"],
+  },
+  { sub: "update-ref", reason: "update-ref -d запрещён", forbid: ["-d"] },
+  {
+    sub: "reflog",
+    reason: "reflog delete и expire запрещены",
+    forbid: ["delete", "expire"],
+  },
+  {
+    sub: "notes",
+    reason: "notes: разрешены только list и show",
+    requireAction: ["list", "show"],
+  },
+  {
+    sub: "commit",
+    reason:
+      "commit без -m/--message или с редактором, обходом хуков, амендом или чужим сообщением запрещён",
+    forbid: [
+      "--amend",
+      "--no-verify",
+      "-n",
+      "-e",
+      "--edit",
+      "-p",
+      "--patch",
+      "--interactive",
+      "-F",
+      "--file",
+      "-C",
+      "-c",
+      "--reuse-message",
+      "--reedit-message",
+      "--fixup",
+      "--squash",
+      "--template",
+      "-t",
+      "--allow-empty",
+      "--allow-empty-message",
+    ],
+    requireAny: ["-m", "--message"],
+    valueOpts: [
+      "-m",
+      "-F",
+      "-C",
+      "-c",
+      "-t",
+      "--message",
+      "--file",
+      "--reuse-message",
+      "--reedit-message",
+      "--fixup",
+      "--squash",
+      "--template",
+      "--author",
+      "--date",
+    ],
+    allowLong: ["--all"],
+  },
+  {
+    sub: "rebase",
+    reason: "rebase -i, -x и --exec запрещён",
+    forbid: ["-i", "--interactive", "-x", "--exec"],
+    valueOpts: ["-x", "--exec"],
+  },
+  {
+    sub: "add",
+    reason: "add -i, -p и -e (интерактивный режим) запрещён",
+    forbid: ["-i", "--interactive", "-p", "--patch", "-e", "--edit"],
+  },
+  {
+    sub: "rm",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("rm", "удаляет файлы из индекса и дерева"),
+  },
+  {
+    sub: "gc",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("gc", "очищает объекты и reflog"),
+  },
+  {
+    sub: "prune",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("prune", "удаляет объекты"),
+  },
+  {
+    sub: "repack",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("repack", "переупаковывает и очищает объекты"),
+  },
+  {
+    sub: "maintenance",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("maintenance", "фоновая очистка репозитория"),
+  },
+  {
+    sub: "filter-branch",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("filter-branch", "переписывает историю"),
+  },
+  {
+    sub: "filter-repo",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("filter-repo", "переписывает историю"),
+  },
+  {
+    sub: "replace",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("replace", "подменяет объекты истории"),
+  },
+  {
+    sub: "alias",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("alias", "обходит правила через собственные имена"),
+  },
+  {
+    sub: "config",
+    refuseAll: true,
+    reason: GIT_WHOLE_REASON("config", "задаёт хуки и оболочку, которыми обходятся правила"),
+  },
+];
+
+/**
+ * Whether a token (raw or canonical flag) hits a row's `forbid` or `forbidPrefix`
+ * (design §2 step 7). A long name matches by exact name or by prefix, the `=`
+ * value is not part of the name, and an `allowLong` name is matched exactly only.
+ */
+function matchesForbid(token: string, rule: GitRule): boolean {
+  const forbid = rule.forbid ?? [];
+  if (forbid.includes(token)) return true;
+  if ((rule.forbidPrefix ?? []).some((prefix) => token.startsWith(prefix))) return true;
+  if (!token.startsWith("--")) return false;
+  const eq = token.indexOf("=");
+  const name = token.slice(2, eq === -1 ? undefined : eq);
+  if (name === "" || (rule.allowLong ?? []).includes(`--${name}`)) return false;
+  return forbid.some((entry) => entry.startsWith(`--${name}`));
+}
+
+/**
+ * The canonical flags of argv[2..] (design §2 step 6). A value consumed by a
+ * value-taking option is not a flag; a short cluster is read letter by letter
+ * until a value-taking letter; `--name=value` is the flag `--name`; a long name
+ * that is a prefix of a value-taking long option takes the value too (closed:
+ * it can only hide a flag, never invent one); tokens after `--` are positional.
+ */
+function canonicalFlags(words: readonly string[], rule: GitRule): string[] {
+  const valueOpts = rule.valueOpts ?? [];
+  const longValueOpts = valueOpts.filter((opt) => opt.startsWith("--"));
+  const flags: string[] = [];
+  let expectValue = false;
+  let positional = false;
+  for (const word of words) {
+    if (expectValue) {
+      expectValue = false;
+      continue;
+    }
+    if (positional) continue;
+    if (word === "--") {
+      flags.push(word);
+      positional = true;
+      continue;
+    }
+    if (word.startsWith("--")) {
+      const eq = word.indexOf("=");
+      const name = eq === -1 ? word : word.slice(0, eq);
+      flags.push(name);
+      if (eq === -1 && name.length > 2 && longValueOpts.some((opt) => opt.startsWith(name))) {
+        expectValue = true;
+      }
+      continue;
+    }
+    if (word.length > 1 && word.startsWith("-")) {
+      for (let i = 1; i < word.length; i += 1) {
+        const letter = `-${word[i]}`;
+        flags.push(letter);
+        if (valueOpts.includes(letter)) {
+          expectValue = i === word.length - 1;
+          break;
+        }
+      }
+    }
+  }
+  return flags;
+}
+
+/**
+ * The single-git-invocation classifier (design §2, FR-001..FR-005). On top of the
+ * shared tokenizer: argv[0] is exactly `git`; argv[1] is not a global option; no
+ * token carries an unquoted expansion character; a subcommand without a GIT_RULES
+ * row is allowed (FR-002); a row refuses by its forbidden words, its prefixes and
+ * its required flags, after token canonicalization.
+ */
+export function isSingleGitInvocation(command: string): GitVerdict {
+  const tokenized = tokenizeShellCommand(command);
+  if (!tokenized.ok) return { ok: false, reason: tokenized.reason };
+  const argv = tokenized.tokens;
+  const [head, subcommand] = argv;
+  if (head === undefined) return { ok: false, reason: "пустая команда" };
+  if (head.value !== "git") return { ok: false, reason: "первый токен не git" };
+  if (subcommand?.value.startsWith("-")) {
+    return { ok: false, reason: "глобальные опции git до подкоманды запрещены" };
+  }
+  for (const token of argv) {
+    if (token.expansion !== undefined) {
+      return {
+        ok: false,
+        reason: `неквотированный символ раскрытия оболочки ${JSON.stringify(token.expansion)}`,
+      };
+    }
+  }
+  if (subcommand === undefined) return { ok: true };
+  const rule = GIT_RULES.find((row) => row.sub === subcommand.value);
+  if (rule === undefined) return { ok: true };
+  if (rule.refuseAll === true) return { ok: false, reason: rule.reason };
+
+  const words = argv.slice(2).map((token) => token.value);
+  if (rule.requireAction !== undefined && !rule.requireAction.includes(words[0] ?? "")) {
+    return { ok: false, reason: rule.reason };
+  }
+  if (words.some((word) => matchesForbid(word, rule))) return { ok: false, reason: rule.reason };
+  const flags = canonicalFlags(words, rule);
+  if (flags.some((flag) => matchesForbid(flag, rule))) return { ok: false, reason: rule.reason };
+  if (rule.requireAny !== undefined && !flags.some((flag) => rule.requireAny?.includes(flag))) {
+    return { ok: false, reason: rule.reason };
+  }
+  return { ok: true };
+}
+
+/** The bash branch the gate takes (design §6.5.1, §2): perl, bd, git, or none. */
 export type BashClassification =
   | { branch: "perl"; verdict: PerlVerdict }
   | { branch: "bd"; verdict: BdVerdict }
+  | { branch: "git"; verdict: GitVerdict }
   | { branch: "other"; reason: string };
 
 /**
@@ -452,6 +811,7 @@ export function classifyBashCommand(command: string): BashClassification {
   const word = tokenized.ok ? tokenized.tokens[0]?.value : tokenized.firstWord;
   if (word === "perl") return { branch: "perl", verdict: isSinglePerlInvocation(command) };
   if (word === "bd") return { branch: "bd", verdict: isSingleBdInvocation(command) };
+  if (word === "git") return { branch: "git", verdict: isSingleGitInvocation(command) };
   if (word !== undefined) return { branch: "other", reason: "первый токен не perl и не bd" };
   return { branch: "other", reason: tokenized.ok ? "пустая команда" : tokenized.reason };
 }

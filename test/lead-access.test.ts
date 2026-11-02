@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   classifyBashCommand,
+  GIT_RULES,
   isPathInsideOpenSpecTarget,
   isSingleBdInvocation,
+  isSingleGitInvocation,
   isSinglePerlInvocation,
   normalizeLeadPath,
   type OpenSpecBoundaryResult,
@@ -652,5 +654,390 @@ describe("isPathInsideOpenSpecTarget — win32 semantics (platform injection, §
       fs: fs as never,
     });
     expect(viaShellDrive.allowed).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Git classifier (fusion-git-gate; design §1, §2, §3.1–§3.6)          */
+/* ------------------------------------------------------------------ */
+
+/** True when the git gate allows the command. */
+function gitAllowed(command: string): boolean {
+  return isSingleGitInvocation(command).ok;
+}
+
+/** The rule row for one subcommand (design §2). */
+function gitRule(sub: string) {
+  const rule = GIT_RULES.find((r) => r.sub === sub);
+  if (rule === undefined) throw new Error(`no GIT_RULES row for ${sub}`);
+  return rule;
+}
+
+describe("isSingleGitInvocation: forbid rows generated from GIT_RULES (design §3.1)", () => {
+  const forbidCases: string[] = [];
+  for (const rule of GIT_RULES) {
+    for (const element of rule.forbid ?? []) {
+      forbidCases.push(`git ${rule.sub} ${element} origin main`);
+      if (/^-[A-Za-z]$/.test(element)) {
+        forbidCases.push(`git ${rule.sub} ${element}x origin main`);
+      } else if (element.startsWith("--") && element !== "--") {
+        const name = element.slice(2);
+        forbidCases.push(`git ${rule.sub} ${element}=1 origin main`);
+        for (let length = 3; length <= name.length; length += 1) {
+          const prefix = `--${name.slice(0, length)}`;
+          if (rule.allowLong?.includes(prefix)) continue;
+          forbidCases.push(`git ${rule.sub} ${prefix} origin main`);
+        }
+      }
+    }
+  }
+
+  it("generates a case for every forbid row", () => {
+    expect(forbidCases.length).toBeGreaterThan(100);
+  });
+
+  it.each(forbidCases)("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+});
+
+describe("isSingleGitInvocation: forbidPrefix rows generated from GIT_RULES (design §3.2)", () => {
+  const prefixCases = GIT_RULES.flatMap((rule) =>
+    (rule.forbidPrefix ?? []).map((prefix) => `git ${rule.sub} origin ${prefix}main`),
+  );
+
+  it.each(prefixCases)("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+
+  it.each([
+    "git push origin +main",
+    "git fetch origin +main:main",
+    "git pull origin +main",
+    "git push origin :main",
+  ])("refuses the explicit refspec form %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+});
+
+describe("isSingleGitInvocation: refused subcommands entirely (design §2 step 5)", () => {
+  const wholeCases = GIT_RULES.filter((rule) => rule.refuseAll === true).map(
+    (rule) => `git ${rule.sub} origin main`,
+  );
+
+  it("covers rm, gc, prune, repack, maintenance, filter-branch, filter-repo, replace, alias, config", () => {
+    expect(wholeCases.map((c) => c.split(" ")[1])).toEqual([
+      "rm",
+      "gc",
+      "prune",
+      "repack",
+      "maintenance",
+      "filter-branch",
+      "filter-repo",
+      "replace",
+      "alias",
+      "config",
+    ]);
+  });
+
+  it.each(wholeCases)("refuses %s with any arguments", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+    expect(gitAllowed(command.replace("origin main", "")), command).toBe(false);
+  });
+});
+
+describe("isSingleGitInvocation: requireAny needs a real flag (design §3.3)", () => {
+  it.each([
+    "git commit",
+    "git commit -a",
+    "git restore f",
+    "git restore --staged --worktree f",
+    "git restore --source --staged f",
+    "git restore --source HEAD f",
+    "git clean -f",
+    "git clean -e -n",
+    "git clean -fd",
+    "git notes add",
+    "git notes add -m list",
+    "git notes --ref=x list",
+  ])("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+
+  it.each([
+    "git commit -m x",
+    "git commit -am x",
+    "git commit --message=x",
+    "git commit --all -m x",
+    "git restore --staged f",
+    "git restore -S f",
+    "git restore --staged --source HEAD f",
+    "git restore --source HEAD --staged f",
+    "git clean -n",
+    "git clean --dry-run",
+    "git notes list",
+    "git notes show",
+  ])("allows %s", (command) => {
+    expect(gitAllowed(command), command).toBe(true);
+  });
+});
+
+describe("isSingleGitInvocation: values, clusters and = forms (design §3.4)", () => {
+  it.each([
+    "git commit -nm x",
+    "git commit -F/tmp/m",
+    "git commit -CHEAD",
+    "git commit --file=m",
+    "git commit --amen -m x",
+    "git clean -fd",
+    "git push -fu origin main",
+    "git add -Ap",
+    "git rebase --exec 'git reset --hard'",
+    "git rebase -x cmd",
+    "git submodule foreach 'x'",
+    "git push --force-w origin main",
+  ])("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+
+  it.each(["git commit -mn", "git clean -fn"])(
+    "allows %s: the letter n is a message or a clean flag, not -n",
+    (command) => {
+      expect(gitAllowed(command), command).toBe(true);
+    },
+  );
+
+  it("a value consumed by -m never counts as a flag; a raw forbidden value refuses (closed, design §2 step 7)", () => {
+    expect(gitAllowed("git commit -m x -n")).toBe(false);
+    expect(gitAllowed("git commit -m x --amend")).toBe(false);
+    expect(gitAllowed("git commit -m --amend")).toBe(false);
+    expect(gitAllowed("git commit -m 'a b' -a")).toBe(true);
+  });
+
+  it("an abbreviated value-taking option consumes the next token as its value", () => {
+    expect(gitAllowed("git clean --exc -n")).toBe(false);
+  });
+
+  it("the refusal reason of a rule is the rule's reason (design §2)", () => {
+    expect(isSingleGitInvocation("git push -f origin main")).toEqual({
+      ok: false,
+      reason: gitRule("push").reason,
+    });
+    expect(isSingleGitInvocation("git reset --hard")).toEqual({
+      ok: false,
+      reason: gitRule("reset").reason,
+    });
+  });
+});
+
+describe("isSingleGitInvocation: false refusals that must stay allowed (design §3.5)", () => {
+  it.each([
+    "git status",
+    "git log --oneline -5",
+    "git log -p -1",
+    "git diff HEAD",
+    "git diff --cached",
+    "git show HEAD -p",
+    "git add extensions/a.ts",
+    "git add .",
+    "git add -A",
+    'git commit -m "feat: x"',
+    "git commit -a -m x",
+    "git commit -m x -- path",
+    "git push origin main",
+    "git push -u origin main",
+    "git push --set-upstream origin main",
+    "git pull --rebase",
+    "git pull --ff-only",
+    "git fetch origin",
+    "git checkout -b feat",
+    "git switch -c feat",
+    "git stash push -m x",
+    "git stash list",
+    "git stash apply",
+    "git remote -v",
+    "git restore --staged f",
+    "git branch",
+    "git worktree list",
+    "git merge --no-edit main",
+  ])("allows %s", (command) => {
+    expect(gitAllowed(command), command).toBe(true);
+  });
+});
+
+describe("isSingleGitInvocation: shell syntax and global options (design §3.6, FR-001)", () => {
+  it.each([
+    "git status; rm -rf x",
+    "git status $(id)",
+    "git status > f",
+    "git status && x",
+    "git -C /tmp status",
+    "git -c core.pager=x log",
+    "git --git-dir=x status",
+    "git --work-tree=x status",
+    'git show "HEAD~1" ~',
+    "git log *",
+    "git status `id`",
+    "git status\nrm -rf x",
+  ])("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
+  });
+
+  it("names the reason of each FR-001 refusal", () => {
+    expect(isSingleGitInvocation("git -C /tmp status")).toEqual({
+      ok: false,
+      reason: "глобальные опции git до подкоманды запрещены",
+    });
+    expect(isSingleGitInvocation("ls -la")).toEqual({ ok: false, reason: "первый токен не git" });
+  });
+});
+
+describe("classifyBashCommand: the git branch (design §1, §2)", () => {
+  it("the first word git takes the git branch, and allowed forms pass it", () => {
+    expect(bashOf("git status")).toEqual({ branch: "git", ok: true });
+    expect(bashOf("git commit -m 'x'")).toEqual({ branch: "git", ok: true });
+  });
+
+  it("a rule refusal keeps the git branch with the rule reason", () => {
+    expect(bashOf("git push --force origin main")).toEqual({
+      branch: "git",
+      ok: false,
+      reason: gitRule("push").reason,
+    });
+  });
+
+  it("a chain that starts with git keeps the git branch and the tokenizer reason", () => {
+    expect(bashOf("git status; rm -rf x")).toEqual({
+      branch: "git",
+      ok: false,
+      reason: 'метасимвол ";" вне кавычек',
+    });
+  });
+
+  it("the other first words keep the perl and bd branches unchanged", () => {
+    expect(classifyBashCommand("perl -e 'x'").branch).toBe("perl");
+    expect(classifyBashCommand("bd list").branch).toBe("bd");
+    expect(bashOf("echo git status")).toEqual({
+      branch: "other",
+      ok: false,
+      reason: UNIFIED_REASON,
+    });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Pinned FR forms (static, NOT derived from GIT_RULES)                */
+/* ------------------------------------------------------------------ */
+
+describe("pinned FR forms (static, не из GIT_RULES)", () => {
+  // Literal list of refused commands from FR-003 / FR-004 / FR-005
+  // (openspec/changes/fusion-git-gate/requirements.md). Deliberately NOT built from
+  // GIT_RULES: deleting a table row (for example `-B` from the checkout forbid)
+  // must fail here, not silently remove its generated case.
+  // Commands with `{`, `~` are quoted so the rule (not the expansion check) refuses them.
+  const pinnedRefusals = [
+    // push (FR-003, FR-004, FR-005)
+    "git push origin main --force",
+    "git push --force-with-lease origin main",
+    "git push origin +main",
+    "git push origin main -f",
+    "git push origin :main",
+    "git push --delete origin main",
+    "git push --mirror origin",
+    "git push --prune origin",
+    "git push --no-verify origin main",
+    "git push --receive-pack=x origin main",
+    // fetch / pull
+    "git fetch --prune origin",
+    "git fetch origin +main:main",
+    "git pull --prune origin main",
+    // reset
+    "git reset --hard",
+    "git reset --merge",
+    "git reset --keep HEAD",
+    // checkout
+    "git checkout -f main",
+    "git checkout -B feat",
+    "git checkout --discard-changes main",
+    "git checkout -- f",
+    // switch
+    "git switch -C feat",
+    "git switch -f main",
+    // restore
+    "git restore f",
+    "git restore --worktree --staged f",
+    "git restore -W f",
+    // clean
+    "git clean -fd",
+    "git clean -f",
+    "git clean -i",
+    // stash
+    "git stash drop",
+    "git stash clear",
+    "git stash pop",
+    // worktree
+    "git worktree remove x",
+    "git worktree prune",
+    "git worktree add -f x",
+    // submodule
+    "git submodule foreach x",
+    "git submodule update --force",
+    // branch / tag / remote / refs
+    "git branch -D x",
+    "git branch -d x",
+    "git branch -M x y",
+    "git branch -C x y",
+    "git tag -d v1",
+    "git tag -f v1",
+    "git remote remove x",
+    "git remote rename a b",
+    "git remote set-url x y",
+    "git symbolic-ref -d HEAD",
+    "git update-ref -d refs/x",
+    "git reflog expire --all",
+    "git reflog delete 'HEAD@{0}'",
+    // rebase
+    "git rebase -i 'HEAD~2'",
+    "git rebase --exec 'x' main",
+    "git rebase -x x",
+    // interactive / patch forms
+    "git add -i",
+    "git add -p",
+    "git add -e f",
+    "git checkout -p",
+    "git restore -p f",
+    "git stash -p",
+    "git reset -p",
+    // commit (hook bypass, amend, editor, foreign message sources, no -m)
+    "git commit --amend -m x",
+    "git commit -n -m x",
+    "git commit --no-verify -m x",
+    "git commit -m x --allow-empty",
+    "git commit -F m",
+    "git commit -C HEAD",
+    "git commit -m x -e",
+    "git commit -p",
+    "git commit -a",
+    "git commit -m x --edit",
+    "git commit",
+    // notes
+    "git notes add -m x",
+    "git notes remove HEAD",
+    // refused subcommands entirely
+    "git rm f",
+    "git config x y",
+    "git alias x",
+    "git gc",
+    "git filter-branch x",
+    "git replace x y",
+    "git maintenance run",
+  ];
+
+  it("pins at least one case per FR-003/FR-004/FR-005 family", () => {
+    expect(pinnedRefusals.length).toBeGreaterThanOrEqual(79);
+  });
+
+  it.each(pinnedRefusals)("refuses %s", (command) => {
+    expect(gitAllowed(command), command).toBe(false);
   });
 });

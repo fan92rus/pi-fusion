@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FUSION_CONFIG_DEFAULTS, readFusionConfig } from "../extensions/pi-fusion/config-bridge.ts";
 
 describe("config-bridge readFusionConfig", () => {
@@ -70,6 +70,61 @@ describe("config-bridge readFusionConfig", () => {
 
   it("falls back to the defaults when the file is not valid JSON", () => {
     expect(readFusionConfig(write("{ not json"))).toEqual(FUSION_CONFIG_DEFAULTS);
+  });
+
+  describe("the project layer (design D7: delegates to loadEffectiveConfig)", () => {
+    let projectDir: string;
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "fusion-project-"));
+      mkdirSync(join(projectDir, ".pi"));
+    });
+
+    afterEach(() => {
+      rmSync(projectDir, { recursive: true, force: true });
+      vi.restoreAllMocks();
+    });
+
+    const writeProject = (content: string): void => {
+      writeFileSync(join(projectDir, ".pi", "fusion.json"), content, "utf8");
+    };
+
+    it("a valid project field overrides the global one, the others stay global", () => {
+      const globalPath = write(JSON.stringify({ workers: 5, workerModels: ["g/a"] }));
+      writeProject(JSON.stringify({ workerModels: ["l/b"] }));
+      const config = readFusionConfig(globalPath, projectDir);
+      expect(config.workerModels).toEqual(["l/b"]);
+      expect(config.workers).toBe(5);
+    });
+
+    it("a broken project file is ignored: the global values stand", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const globalPath = write(JSON.stringify({ workers: 5 }));
+      writeProject("{ not json");
+      expect(readFusionConfig(globalPath, projectDir).workers).toBe(5);
+    });
+
+    it("reads the project directory of process.cwd() at call time when none is given", () => {
+      const globalPath = write(JSON.stringify({ workers: 5 }));
+      writeProject(JSON.stringify({ workers: 7 }));
+      const cwd = vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+      expect(readFusionConfig(globalPath).workers).toBe(7);
+      expect(cwd).toHaveBeenCalled();
+    });
+
+    it("keeps the bridge snapshot to its six fields (no origins, no lead-gate lists)", () => {
+      const config = readFusionConfig(join(dir, "missing.json"), projectDir);
+      expect(Object.keys(config).sort()).toEqual(
+        [
+          "maxParallel",
+          "maxSteps",
+          "researcherWeb",
+          "taskTimeoutMs",
+          "workerModels",
+          "workers",
+        ].sort(),
+      );
+    });
   });
 
   it("returns a frozen snapshot that does not share state with the defaults", () => {

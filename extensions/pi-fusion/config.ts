@@ -10,6 +10,12 @@
  * the defaults; every field is taken only when it has the right type and is
  * inside its bounds, otherwise the field warns and keeps its default. The
  * extension never fails to load over its own settings.
+ *
+ * Layers (openspec fusion-project-config, design D1-D3): the project file
+ * `<projectDir>/.pi/fusion.json` overrides the global file per field. Both
+ * layers are read by the same presence-aware parser, so a field is either
+ * present-and-valid in a layer or absent from it; a list replaces the lower
+ * layer as a whole, never merges with it.
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,6 +40,9 @@ export interface FusionConfig extends FanoutConfig {
    */
   researcherWeb: ResearcherWebMode;
 }
+
+/** Where the effective value of each field comes from (design D2). */
+export type FieldOrigins = { [K in keyof FusionConfig]: "local" | "global" | "default" };
 
 function frozenList(items: readonly string[]): string[] {
   // Frozen at runtime, mutable in type: snapshots must be read-only without
@@ -87,6 +96,11 @@ export function defaultFusionConfigPath(): string {
   return join(resolveAgentDir(), "fusion.json");
 }
 
+/** `<projectDir>/.pi/fusion.json` — the project layer (design D1). */
+export function projectFusionConfigPath(projectDir: string): string {
+  return join(projectDir, ".pi", "fusion.json");
+}
+
 function isIntInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
@@ -112,6 +126,39 @@ function errorText(error: unknown): string {
  */
 let retiredEnabledWarned = false;
 
+/**
+ * Keys of the warnings already emitted in this process (a file, or one field
+ * of a file, per key). config.ts is read on every tool call and every
+ * `/fusion status`, so a broken file would otherwise repeat its warning for as
+ * long as it stays broken (review major 2). Keys carry the path, so a second
+ * broken file in another directory still warns once.
+ */
+const warnedOnce = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(message);
+}
+
+/** Operator-facing wording of the two layers' fallbacks (warnings only). */
+interface LayerNotes {
+  /** Closes a file-level warning, after the reason. */
+  fileFallback: string;
+  /** Closes a per-field warning, after the field name. */
+  fieldFallback: string;
+}
+
+const GLOBAL_NOTES: LayerNotes = {
+  fileFallback: "using defaults",
+  fieldFallback: "keeping the default",
+};
+
+const LOCAL_NOTES: LayerNotes = {
+  fileFallback: "ignoring the project layer",
+  fieldFallback: "inheriting the lower layer",
+};
+
 /** A fresh independent copy of the defaults or of a validated document. */
 function snapshot(config: FusionConfig): Readonly<FusionConfig> {
   return Object.freeze({
@@ -127,9 +174,29 @@ function snapshot(config: FusionConfig): Readonly<FusionConfig> {
   });
 }
 
-function readFields(fields: Record<string, unknown>, path: string): FusionConfig {
+/**
+ * Keeps only the keys that were present and valid. Absence stays absence:
+ * that is what lets a layer inherit from the one below it.
+ */
+function presentOnly(fields: Partial<Record<keyof FusionConfig, unknown>>): Partial<FusionConfig> {
+  const present: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) present[key] = value;
+  }
+  return present as Partial<FusionConfig>;
+}
+
+/** Validates one layer's document; returns only the fields it actually sets validly. */
+function readFields(
+  fields: Record<string, unknown>,
+  path: string,
+  notes: LayerNotes,
+): Partial<FusionConfig> {
   const warnField = (key: string): void => {
-    console.warn(`[pi-fusion] ${path}: field "${key}" has an invalid value, keeping the default`);
+    warnOnce(
+      `${path}\u0000${key}`,
+      `[pi-fusion] ${path}: field "${key}" has an invalid value, ${notes.fieldFallback}`,
+    );
   };
   if (Object.hasOwn(fields, "enabled") && !retiredEnabledWarned) {
     retiredEnabledWarned = true;
@@ -140,89 +207,154 @@ function readFields(fields: Record<string, unknown>, path: string): FusionConfig
   const number = (
     key: keyof FusionConfig,
     bound: { min: number; max: number },
-    fallback: number,
-  ): number => {
+  ): number | undefined => {
     const value = fields[key];
-    if (value === undefined) return fallback;
+    if (value === undefined) return undefined;
     if (!isIntInRange(value, bound.min, bound.max)) {
       warnField(key);
-      return fallback;
+      return undefined;
     }
     return value;
   };
-  const flag = (key: keyof FusionConfig, fallback: boolean): boolean => {
+  const flag = (key: keyof FusionConfig): boolean | undefined => {
     const value = fields[key];
-    if (value === undefined) return fallback;
+    if (value === undefined) return undefined;
     if (typeof value !== "boolean") {
       warnField(key);
-      return fallback;
+      return undefined;
     }
     return value;
   };
-  const list = (key: keyof FusionConfig, fallback: string[]): string[] => {
+  const list = (key: keyof FusionConfig): string[] | undefined => {
     const value = fields[key];
-    if (value === undefined) return fallback;
+    if (value === undefined) return undefined;
     if (!isStringList(value)) {
       warnField(key);
-      return fallback;
+      return undefined;
     }
     return [...value];
   };
-  const mode = (key: keyof FusionConfig, fallback: ResearcherWebMode): ResearcherWebMode => {
+  const mode = (key: keyof FusionConfig): ResearcherWebMode | undefined => {
     const value = fields[key];
-    if (value === undefined) return fallback;
+    if (value === undefined) return undefined;
     if (!isResearcherWebMode(value)) {
       warnField(key);
-      return fallback;
+      return undefined;
     }
     return value;
   };
-  const defaults = FUSION_CONFIG_DEFAULTS;
-  return {
-    workers: number("workers", FUSION_CONFIG_BOUNDS.workers, defaults.workers),
-    maxParallel: number("maxParallel", FUSION_CONFIG_BOUNDS.maxParallel, defaults.maxParallel),
-    taskTimeoutMs: number(
-      "taskTimeoutMs",
-      FUSION_CONFIG_BOUNDS.taskTimeoutMs,
-      defaults.taskTimeoutMs,
-    ),
-    workerModels: list("workerModels", [...defaults.workerModels]),
-    maxSteps: number("maxSteps", FUSION_CONFIG_BOUNDS.maxSteps, defaults.maxSteps),
-    requireApproval: flag("requireApproval", defaults.requireApproval),
-    blockedTools: list("blockedTools", [...defaults.blockedTools]),
-    leadBlockedTools: list("leadBlockedTools", [...defaults.leadBlockedTools]),
-    researcherWeb: mode("researcherWeb", defaults.researcherWeb),
-  };
+  return presentOnly({
+    workers: number("workers", FUSION_CONFIG_BOUNDS.workers),
+    maxParallel: number("maxParallel", FUSION_CONFIG_BOUNDS.maxParallel),
+    taskTimeoutMs: number("taskTimeoutMs", FUSION_CONFIG_BOUNDS.taskTimeoutMs),
+    workerModels: list("workerModels"),
+    maxSteps: number("maxSteps", FUSION_CONFIG_BOUNDS.maxSteps),
+    requireApproval: flag("requireApproval"),
+    blockedTools: list("blockedTools"),
+    leadBlockedTools: list("leadBlockedTools"),
+    researcherWeb: mode("researcherWeb"),
+  });
 }
 
-/**
- * Reads the settings file; every field is taken only when it has the right
- * type and sits inside its bounds. Each call returns a new frozen snapshot,
- * so callers cannot change the defaults or each other's view.
- */
-export function loadFusionConfig(path: string = defaultFusionConfigPath()): Readonly<FusionConfig> {
+/** A raw JSON document read from disk, before any field validation. */
+type DocumentRead =
+  | { status: "missing" }
+  | { status: "invalid"; reason: string }
+  | { status: "ok"; doc: Record<string, unknown> };
+
+/** Reads and parses one file; only a non-existent file counts as `missing`. */
+function readDocument(path: string): DocumentRead {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return snapshot(FUSION_CONFIG_DEFAULTS);
-    }
-    console.warn(`[pi-fusion] ${path} is unreadable (${errorText(error)}); using defaults`);
-    return snapshot(FUSION_CONFIG_DEFAULTS);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+    return { status: "invalid", reason: `is unreadable (${errorText(error)})` };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    console.warn(`[pi-fusion] ${path} is not valid JSON (${errorText(error)}); using defaults`);
-    return snapshot(FUSION_CONFIG_DEFAULTS);
+    return { status: "invalid", reason: `is not valid JSON (${errorText(error)})` };
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    console.warn(`[pi-fusion] ${path} is not a JSON object; using defaults`);
-    return snapshot(FUSION_CONFIG_DEFAULTS);
+    return { status: "invalid", reason: "is not a JSON object" };
   }
-  return snapshot(readFields(parsed as Record<string, unknown>, path));
+  return { status: "ok", doc: parsed as Record<string, unknown> };
+}
+
+/**
+ * The one presence-aware parser, applied to each layer. A missing file is an
+ * empty layer, silently; a broken file is an empty layer with one warning.
+ */
+function readLayer(path: string, notes: LayerNotes): Partial<FusionConfig> {
+  const document = readDocument(path);
+  if (document.status === "missing") return {};
+  if (document.status === "invalid") {
+    warnOnce(path, `[pi-fusion] ${path} ${document.reason}; ${notes.fileFallback}`);
+    return {};
+  }
+  return readFields(document.doc, path, notes);
+}
+
+/**
+ * Reads the global settings file; every field is taken only when it has the
+ * right type and sits inside its bounds. Each call returns a new frozen
+ * snapshot, so callers cannot change the defaults or each other's view.
+ */
+export function loadFusionConfig(path: string = defaultFusionConfigPath()): Readonly<FusionConfig> {
+  return snapshot({ ...FUSION_CONFIG_DEFAULTS, ...readLayer(path, GLOBAL_NOTES) });
+}
+
+/**
+ * The effective configuration: defaults, then valid global fields, then valid
+ * project overrides, each field resolved independently. `origins` names the
+ * layer that supplied every value. Read fresh on every call.
+ */
+export function loadEffectiveConfig(
+  globalPath: string,
+  projectDir: string,
+): { config: Readonly<FusionConfig>; origins: FieldOrigins } {
+  const global = readLayer(globalPath, GLOBAL_NOTES);
+  const local = readLayer(projectFusionConfigPath(projectDir), LOCAL_NOTES);
+  const origins = {} as FieldOrigins;
+  for (const key of Object.keys(FUSION_CONFIG_DEFAULTS) as (keyof FusionConfig)[]) {
+    origins[key] = Object.hasOwn(local, key)
+      ? "local"
+      : Object.hasOwn(global, key)
+        ? "global"
+        : "default";
+  }
+  const merged: FusionConfig = { ...FUSION_CONFIG_DEFAULTS, ...global, ...local };
+  return { config: snapshot(merged), origins: Object.freeze(origins) };
+}
+
+/** Writes a JSON document atomically: tmp file, then rename onto the target. */
+function writeJsonAtomic(path: string, document: Record<string, unknown>): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+    renameSync(tmp, path);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * Raw document of the project file for a write: `null` when the file is
+ * absent, and a refusal (never a silent overwrite) when it is broken.
+ */
+function readProjectDocumentForWrite(path: string): Record<string, unknown> | null {
+  const document = readDocument(path);
+  if (document.status === "missing") return null;
+  if (document.status === "invalid") {
+    throw new Error(
+      `cannot write project config ${path}: the file ${document.reason}; fix or remove it first (nothing was changed)`,
+    );
+  }
+  return document.doc;
 }
 
 /**
@@ -235,7 +367,7 @@ export function persistFusionConfig(
   config: FusionConfig,
   path: string = defaultFusionConfigPath(),
 ): void {
-  const canonical = {
+  writeJsonAtomic(path, {
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,
@@ -245,14 +377,37 @@ export function persistFusionConfig(
     blockedTools: [...config.blockedTools],
     leadBlockedTools: [...config.leadBlockedTools],
     researcherWeb: config.researcherWeb,
-  };
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  try {
-    writeFileSync(tmp, `${JSON.stringify(canonical, null, 2)}\n`, "utf8");
-    renameSync(tmp, path);
-  } catch (error) {
-    rmSync(tmp, { force: true });
-    throw error;
+  });
+}
+
+/**
+ * Merges the delta into the project file's raw JSON: only the delta keys are
+ * touched, unknown keys stay as they are, and a missing file is created with
+ * just the delta. An `undefined` delta value is skipped. A broken project file
+ * is refused, not overwritten.
+ */
+export function persistProjectFusionDelta(delta: Partial<FusionConfig>, projectDir: string): void {
+  const path = projectFusionConfigPath(projectDir);
+  const document = readProjectDocumentForWrite(path) ?? {};
+  for (const [key, value] of Object.entries(delta)) {
+    if (value !== undefined) document[key] = value;
   }
+  writeJsonAtomic(path, document);
+}
+
+/**
+ * Removes one key from the project file's raw JSON. When no keys are left the
+ * file is deleted: an empty `{}` is never persisted. An absent file or key is
+ * a no-op; a broken project file is refused.
+ */
+export function clearProjectFusionOverride(key: keyof FusionConfig, projectDir: string): void {
+  const path = projectFusionConfigPath(projectDir);
+  const document = readProjectDocumentForWrite(path);
+  if (document === null || !Object.hasOwn(document, key)) return;
+  delete document[key];
+  if (Object.keys(document).length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  writeJsonAtomic(path, document);
 }

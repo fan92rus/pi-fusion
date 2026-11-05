@@ -133,8 +133,12 @@ function isFanoutResult(value: unknown): value is FanoutResult {
 export interface LeadRestrictionOptions {
   /** Feature flag: the gate applies only while fusion is on. */
   isEnabled: (ctx?: unknown) => boolean;
-  /** Tools the lead may not call; defaults to LEAD_BLOCKED_TOOLS. */
-  blockedTools?: readonly string[];
+  /**
+   * Tools the lead may not call; defaults to LEAD_BLOCKED_TOOLS. A getter, read
+   * on every check (design D9): a project override of leadBlockedTools applies
+   * to the next call without a restart.
+   */
+  blockedTools?: () => readonly string[];
   /** False in a child worker process; defaults to "not PI_SUBAGENT_CHILD=1". */
   isLeadSession?: () => boolean;
   /**
@@ -463,7 +467,8 @@ function gateDecision(
 
 /** Registers the lead gate: the tool_call refusal plus the run-scoped fan-out state. */
 export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrictionOptions): void {
-  const blocked = new Set<string>(options.blockedTools ?? LEAD_BLOCKED_TOOLS);
+  const blockedNow = (): Set<string> =>
+    new Set<string>(options.blockedTools?.() ?? LEAD_BLOCKED_TOOLS);
   const isLeadSession = options.isLeadSession ?? isMainProcess;
   const projectRootOf = (ctx: { cwd?: string } | undefined): string =>
     (options.projectRoot ?? (() => ctx?.cwd ?? process.cwd()))();
@@ -506,7 +511,7 @@ export function registerLeadRestrictions(pi: ExtensionAPI, options: LeadRestrict
   });
 
   pi.on("tool_call", (event, ctx): ToolCallEventResult | undefined => {
-    if (!blocked.has(event.toolName)) return undefined;
+    if (!blockedNow().has(event.toolName)) return undefined;
     let enabled = false;
     try {
       enabled = options.isEnabled(ctx);

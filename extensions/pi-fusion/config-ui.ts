@@ -1,18 +1,29 @@
 /**
  * config-ui.ts — interactive TUI configuration for fusion mode (`/fusion
  * config`), modeled on pi-autoresearch's `parallel/config-ui.ts` menu: a
- * select loop whose title always re-renders the current fusion.json values,
- * so the operator sees what they are about to change and what changed after
- * every edit. Numbers are validated against the same FUSION_CONFIG_BOUNDS
- * config.ts enforces on load, and lists parse with the same rule as
- * `/fusion model`. The menu edits only the shared fusion.json settings: the
- * session's on/off activation is neither shown nor changed here (`/fusion on|off`).
+ * select loop whose title always re-renders the current values, so the
+ * operator sees what they are about to change and what changed after every
+ * edit. Numbers are validated against the same FUSION_CONFIG_BOUNDS config.ts
+ * enforces on load, and lists parse with the same rule as `/fusion model`.
+ * The menu edits only the shared fusion settings: the session's on/off
+ * activation is neither shown nor changed here (`/fusion on|off`).
+ *
+ * Two layers (openspec fusion-project-config, D5): a switcher chooses the
+ * global `~/.pi/agent/fusion.json` or the project `.pi/fusion.json`. Global
+ * mode persists full snapshots; local mode shows each field's effective value
+ * with its origin, persists one key per edit, and creates an override only
+ * after an explicit confirm. Switching layers writes nothing.
  *
  * Localized: auto-detects Russian locale (ru-RU) and shows Russian UI.
  */
 
 import { type FusionCommandDeps, type FusionUIDialogs, parsePositiveInt } from "./commands.ts";
-import { FUSION_CONFIG_BOUNDS, FUSION_CONFIG_DEFAULTS, type FusionConfig } from "./config.ts";
+import {
+  type FieldOrigins,
+  FUSION_CONFIG_BOUNDS,
+  FUSION_CONFIG_DEFAULTS,
+  type FusionConfig,
+} from "./config.ts";
 
 // ─── i18n ────────────────────────────────────────────────────────────────────
 
@@ -24,10 +35,11 @@ function detectRu(): boolean {
 const RU = detectRu();
 
 const L = {
-  title: RU ? "Конфигурация fusion (fusion.json)" : "Fusion configuration (fusion.json)",
+  title: RU ? "Конфигурация fusion" : "Fusion configuration",
   currentLabel: RU ? "Текущие:" : "Current:",
   done: RU ? "✅ Готово" : "✅ Done",
   back: RU ? "↩️ Назад" : "↩️ Back",
+  layerSwitch: "↩️ Слой / Layer",
   noChange: RU ? "Без изменений" : "No change",
   saved: RU ? "Конфиг сохранён." : "Config saved.",
   errorPrefix: RU ? "Ошибка: " : "Error: ",
@@ -38,6 +50,27 @@ const L = {
     ? "Введите новое значение (пусто — отмена):"
     : "Enter a new value (blank = cancel):",
   invalid: RU ? "Неверное значение" : "Invalid value",
+  switcherTitle: RU
+    ? "Какую конфигурацию редактировать?\n\nГлобальная — ~/.pi/agent/fusion.json. Локальная — .pi/fusion.json проекта: переопределяет поля глобальной. Переключение ничего не записывает."
+    : "Which configuration to edit?\n\nGlobal — ~/.pi/agent/fusion.json. Local — the project's .pi/fusion.json: overrides global fields one by one. Switching writes nothing.",
+  layerGlobal: RU ? "Глобальная (~/.pi/agent/fusion.json)" : "Global (~/.pi/agent/fusion.json)",
+  layerLocalExists: RU
+    ? "Локальная (.pi/fusion.json) — файл есть"
+    : "Local (.pi/fusion.json) — file exists",
+  layerLocalMissing: RU
+    ? "Локальная (.pi/fusion.json) — файла нет (создастся при первом переопределении)"
+    : "Local (.pi/fusion.json) — no file yet (created by the first override)",
+  layerName: (layer: Layer): string =>
+    layer === "global" ? (RU ? "глобальная" : "Global") : RU ? "локальная" : "Local",
+  overrideTitle: RU ? "Переопределить здесь?" : "Override here?",
+  overrideMessage: (key: string, origin: string): string =>
+    RU
+      ? `«${key}» сейчас наследуется (${origin}). Создать локальное переопределение в .pi/fusion.json?`
+      : `"${key}" is inherited (${origin}). Create a local override in .pi/fusion.json?`,
+  resetRow: (key: string): string =>
+    RU ? `♻️ Сбросить к наследованию: ${key}` : `♻️ Reset to inherited: ${key}`,
+  resetDone: (key: string): string =>
+    RU ? `Сброшено к наследованию: ${key}` : `Reset to inherited: ${key}`,
   researcherWebTitle: RU ? "Состав веб-инструментов researcher" : "Researcher web composition",
   researcherWebDescription: RU
     ? "Ровно один профиль researcher соответствует составу; запуск с составом шире окружения честно падает preflight'ом. Дефолт none; both подтверждён live-смоуком."
@@ -69,12 +102,13 @@ const L = {
 const CLEAR_PATTERN = /^(clear|очистить)$/i;
 
 /**
- * The localized action rows (done/back/on/off/approval options). Exported so
- * tests script the menu with the exact labels the current locale renders.
+ * The localized action rows (done/back/layer/on/off/approval options). Exported
+ * so tests script the menu with the exact labels the current locale renders.
  */
 export const MENU_ACTIONS = {
   done: L.done,
   back: L.back,
+  layer: L.layerSwitch,
   approvalRequired: L.approvalRequired,
   approvalOptional: L.approvalOptional,
 } as const;
@@ -86,6 +120,20 @@ export const RESEARCHER_WEB_OPTIONS: Record<FusionConfig["researcherWeb"], strin
   codex: L.researcherWebCodex,
   both: L.researcherWebBoth,
 };
+
+/** The two layers the switcher chooses between (design D5). */
+export type Layer = "global" | "local";
+
+/**
+ * The switcher's option labels. The local label notes whether the project file
+ * exists; the file decides which option is suggested (first) on entry.
+ */
+export function layerOptionLabels(projectExists: boolean): Record<Layer, string> {
+  return {
+    global: L.layerGlobal,
+    local: projectExists ? L.layerLocalExists : L.layerLocalMissing,
+  };
+}
 
 // ─── Field specs ─────────────────────────────────────────────────────────────
 
@@ -167,8 +215,8 @@ const LIST_SPECS: Record<ListKey, ListSpec> = {
     key: "leadBlockedTools",
     label: RU ? "🧱 Запрещённые лиду инструменты" : "🧱 Lead blocked tools",
     description: RU
-      ? "Инструменты, изъятые у сессии лида, пока fusion включён. Вступает в силу после перезапуска pi."
-      : "Tools removed from the lead session while fusion is on. Takes effect after pi restarts.",
+      ? "Инструменты, изъятые у сессии лида, пока fusion включён. Применяется сразу — гейт читает список свежо при каждом вызове."
+      : "Tools removed from the lead session while fusion is on. Applies immediately — the gate reads the list fresh on every check.",
     empty: RU ? "(нет)" : "(none)",
   },
 };
@@ -179,6 +227,11 @@ function isNumberKey(id: MenuItemId): id is NumberKey {
 
 function isListKey(id: MenuItemId): id is ListKey {
   return (LIST_KEYS as readonly string[]).includes(id);
+}
+
+/** The config key a menu row edits (the approval row is the `requireApproval` flag). */
+function configKeyOf(id: MenuItemId): keyof FusionConfig {
+  return id === "approval" ? "requireApproval" : id;
 }
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
@@ -215,10 +268,12 @@ export interface MenuItem {
 }
 
 /**
- * The selectable menu rows with the current value baked into each label.
- * Exported so tests can pick a row by id without depending on the locale.
+ * The selectable menu rows with the current value baked into each label. With
+ * `origins` (local mode) each label ends in its source tag, `[local]`,
+ * `[global]` or `[default]`. Exported so tests can pick a row by id without
+ * depending on the locale.
  */
-export function fusionMenuItems(config: FusionConfig): MenuItem[] {
+export function fusionMenuItems(config: FusionConfig, origins?: FieldOrigins): MenuItem[] {
   const numberLabel = (spec: NumberSpec): string => {
     const value = config[spec.key];
     const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(value)})` : "";
@@ -226,7 +281,7 @@ export function fusionMenuItems(config: FusionConfig): MenuItem[] {
   };
   const listLabel = (spec: ListSpec): string =>
     `${spec.label} — ${joinOr(config[spec.key], spec.empty)}`;
-  return [
+  const items: MenuItem[] = [
     { id: "workerModels", label: listLabel(LIST_SPECS.workerModels) },
     { id: "workers", label: numberLabel(NUMBER_SPECS.workers) },
     { id: "maxParallel", label: numberLabel(NUMBER_SPECS.maxParallel) },
@@ -240,19 +295,35 @@ export function fusionMenuItems(config: FusionConfig): MenuItem[] {
     { id: "blockedTools", label: listLabel(LIST_SPECS.blockedTools) },
     { id: "leadBlockedTools", label: listLabel(LIST_SPECS.leadBlockedTools) },
   ];
+  return items.map((item) => ({
+    ...item,
+    label: origins ? `${item.label} [${origins[configKeyOf(item.id)]}]` : item.label,
+  }));
 }
 
-function menuTitle(config: FusionConfig): string {
-  return `${L.title}\n\n${L.currentLabel}\n${formatCurrent(config)}`;
+/** The reset row of a local-origin field: `Reset to inherited`, keyed by the config key. */
+export function resetRowLabel(id: MenuItemId): string {
+  return L.resetRow(configKeyOf(id));
+}
+
+function menuTitle(layer: Layer, config: FusionConfig): string {
+  return `${L.title} — ${L.layerName(layer)}\n\n${L.currentLabel}\n${formatCurrent(config)}`;
 }
 
 // ─── Editors ─────────────────────────────────────────────────────────────────
 
-async function editResearcherWeb(
-  deps: FusionCommandDeps,
-  dialogs: FusionUIDialogs,
-  config: FusionConfig,
-): Promise<void> {
+/** What an editor sees and how it persists: the shown value and the layer's write path. */
+interface EditScope {
+  deps: FusionCommandDeps;
+  dialogs: FusionUIDialogs;
+  /** The effective (local mode) or global (global mode) configuration on screen. */
+  config: FusionConfig;
+  /** Persists only the given keys (local: the project delta; global: a full snapshot). */
+  write: (delta: Partial<FusionConfig>) => void;
+}
+
+async function editResearcherWeb(scope: EditScope): Promise<void> {
+  const { deps, dialogs, config, write } = scope;
   const options = RESEARCHER_WEB_OPTIONS;
   const choice = await dialogs.select(`${L.researcherWebTitle}\n\n${L.researcherWebDescription}`, [
     options.none,
@@ -269,16 +340,12 @@ async function editResearcherWeb(
     deps.notify(L.noChange, "info");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), researcherWeb: mode });
+  write({ researcherWeb: mode });
   deps.notify(`${L.researcherWebTitle} → ${options[mode]}`, "info");
 }
 
-async function editNumber(
-  deps: FusionCommandDeps,
-  dialogs: FusionUIDialogs,
-  spec: NumberSpec,
-  config: FusionConfig,
-): Promise<void> {
+async function editNumber(scope: EditScope, spec: NumberSpec): Promise<void> {
+  const { deps, dialogs, config, write } = scope;
   const { min, max } = FUSION_CONFIG_BOUNDS[spec.key];
   const value = config[spec.key];
   const maxText = max === Number.MAX_SAFE_INTEGER ? "∞" : String(max);
@@ -302,17 +369,14 @@ async function editNumber(
     deps.notify(`${L.invalid} (${rangeText})`, "error");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), [spec.key]: parsed });
+  const delta: Partial<FusionConfig> = { [spec.key]: parsed };
+  write(delta);
   const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(parsed)})` : "";
   deps.notify(`${spec.label} → ${parsed}${suffix}`, "info");
 }
 
-async function editList(
-  deps: FusionCommandDeps,
-  dialogs: FusionUIDialogs,
-  spec: ListSpec,
-  config: FusionConfig,
-): Promise<void> {
+async function editList(scope: EditScope, spec: ListSpec): Promise<void> {
+  const { deps, dialogs, config, write } = scope;
   const current = config[spec.key];
   const title = [
     `${spec.label} — ${joinOr(current, spec.empty)}`,
@@ -337,19 +401,16 @@ async function editList(
       deps.notify(`${L.invalid} (${L.listHint})`, "error");
       return;
     }
-    deps.persistConfig({ ...deps.loadConfig(), [spec.key]: next });
+    write({ [spec.key]: next });
     deps.notify(`${spec.label} → ${joinOr(next, spec.empty)}`, "info");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), [spec.key]: [] });
+  write({ [spec.key]: [] });
   deps.notify(`${spec.label} → ${spec.empty}`, "info");
 }
 
-async function editApproval(
-  deps: FusionCommandDeps,
-  dialogs: FusionUIDialogs,
-  config: FusionConfig,
-): Promise<void> {
+async function editApproval(scope: EditScope): Promise<void> {
+  const { deps, dialogs, config, write } = scope;
   const choice = await dialogs.select(`${L.approvalTitle}\n\n${L.approvalDescription}`, [
     L.approvalRequired,
     L.approvalOptional,
@@ -361,22 +422,136 @@ async function editApproval(
     deps.notify(L.noChange, "info");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), requireApproval: required });
+  write({ requireApproval: required });
   deps.notify(`${L.approvalTitle} → ${required ? L.approvalRequired : L.approvalOptional}`, "info");
+}
+
+/**
+ * Opens one field's editor. In local mode a field that is not overridden yet
+ * (origin global/default) first needs an explicit confirm: only then does the
+ * editor's write create the project override.
+ */
+async function editItem(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  layer: Layer,
+  view: LayerView,
+  item: MenuItem,
+): Promise<void> {
+  const key = configKeyOf(item.id);
+  const origin = view.origins?.[key];
+  if (layer === "local" && origin !== undefined && origin !== "local") {
+    const approved = await dialogs.confirm(L.overrideTitle, L.overrideMessage(key, origin));
+    if (!approved) {
+      deps.notify(L.noChange, "info");
+      return;
+    }
+  }
+  const scope: EditScope = {
+    deps,
+    dialogs,
+    config: view.config,
+    write:
+      layer === "local"
+        ? (delta) => deps.persistProjectDelta(delta)
+        : (delta) => deps.persistGlobal({ ...deps.loadGlobal(), ...delta }),
+  };
+  if (item.id === "researcherWeb") await editResearcherWeb(scope);
+  else if (item.id === "approval") await editApproval(scope);
+  else if (isNumberKey(item.id)) await editNumber(scope, NUMBER_SPECS[item.id]);
+  else if (isListKey(item.id)) await editList(scope, LIST_SPECS[item.id]);
+}
+
+// ─── Layers: switcher and layer menu ─────────────────────────────────────────
+
+/** What one layer shows: its values, and in local mode each value's origin. */
+interface LayerView {
+  config: FusionConfig;
+  origins?: FieldOrigins;
+}
+
+/** Fresh read of the layer on screen (every loop re-reads, so writes show at once). */
+function readView(deps: FusionCommandDeps, layer: Layer): LayerView {
+  if (layer === "global") return { config: deps.loadGlobal() };
+  return { config: deps.loadEffective(), origins: deps.getOrigins() };
+}
+
+/**
+ * The switcher. The first option is the suggestion: on entry the local layer
+ * when the project file exists, else global; after returning from a layer it
+ * is the other layer (the flip the operator most likely wants). Nothing is
+ * written here.
+ */
+async function pickLayer(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  suggested: Layer,
+): Promise<Layer | undefined> {
+  const labels = layerOptionLabels(deps.projectConfigExists());
+  const options =
+    suggested === "local" ? [labels.local, labels.global] : [labels.global, labels.local];
+  const choice = await dialogs.select(L.switcherTitle, options);
+  if (choice === labels.local) return "local";
+  if (choice === labels.global) return "global";
+  return undefined;
+}
+
+/**
+ * One layer's menu loop. Returns `true` when the operator asks for the layer
+ * switcher (↩️ Слой / Layer) and `false` when the menu is done or cancelled.
+ */
+async function runLayerMenu(
+  deps: FusionCommandDeps,
+  dialogs: FusionUIDialogs,
+  layer: Layer,
+): Promise<boolean> {
+  while (true) {
+    const view = readView(deps, layer);
+    const items = fusionMenuItems(view.config, view.origins);
+    // Local-origin fields get a reset row; the reset is the selection itself (no confirm).
+    const resets =
+      layer === "local"
+        ? items.filter((item) => view.origins?.[configKeyOf(item.id)] === "local")
+        : [];
+    const choice = await dialogs.select(menuTitle(layer, view.config), [
+      L.layerSwitch,
+      ...items.map((item) => item.label),
+      ...resets.map((item) => resetRowLabel(item.id)),
+      L.done,
+    ]);
+    if (!choice || choice === L.done) return false;
+    if (choice === L.layerSwitch) return true;
+    try {
+      const reset = resets.find((item) => resetRowLabel(item.id) === choice);
+      if (reset) {
+        const key = configKeyOf(reset.id);
+        deps.clearProjectOverride(key);
+        deps.notify(L.resetDone(key), "info");
+        continue;
+      }
+      const item = items.find((entry) => entry.label === choice);
+      if (!item) continue;
+      await editItem(deps, dialogs, layer, view, item);
+    } catch (error) {
+      deps.notify(
+        L.errorPrefix + (error instanceof Error ? error.message : String(error)),
+        "error",
+      );
+    }
+  }
 }
 
 // ─── Main menu loop ──────────────────────────────────────────────────────────
 
 /**
- * Runs the `/fusion config` menu until the operator picks "done". Every loop
- * re-reads fusion.json, so edits made outside the menu (another `/fusion`
- * call, a manual file edit) are reflected on the next screen.
+ * Runs the `/fusion config` menu until the operator exits. The switcher picks
+ * the layer; each layer loop re-reads its files, so edits made outside the menu
+ * (another `/fusion` call, a manual file edit) are reflected on the next screen.
  */
 export async function interactiveFusionConfig(
   deps: FusionCommandDeps,
   dialogs: FusionUIDialogs,
 ): Promise<void> {
-  deps.notify(`${L.title}\n\n${L.currentLabel}\n${formatCurrent(deps.loadConfig())}`, "info");
   // B6 (design §4.6): the /fusion config path installs the manifest profiles
   // whenever any is absent or stale, then reports EVERY profile's outcome
   // (§4.6/§7 — `current` rows stay visible in the same notice).
@@ -389,27 +564,15 @@ export async function interactiveFusionConfig(
           .map((row) => ({ name: row.name, outcome: row.status, path: row.path }));
   const lines = installed.map((result) => `  ${result.name}: ${result.outcome} @ ${result.path}`);
   deps.notify(`profiles:\n${lines.join("\n")}`, "info");
-  while (true) {
-    const config = deps.loadConfig();
-    const items = fusionMenuItems(config);
-    const choice = await dialogs.select(menuTitle(config), [
-      ...items.map((item) => item.label),
-      L.done,
-    ]);
-    if (!choice || choice === L.done) break;
-    try {
-      const item = items.find((entry) => entry.label === choice);
-      if (!item) continue;
-      if (item.id === "researcherWeb") await editResearcherWeb(deps, dialogs, config);
-      else if (item.id === "approval") await editApproval(deps, dialogs, config);
-      else if (isNumberKey(item.id)) await editNumber(deps, dialogs, NUMBER_SPECS[item.id], config);
-      else if (isListKey(item.id)) await editList(deps, dialogs, LIST_SPECS[item.id], config);
-    } catch (error) {
-      deps.notify(
-        L.errorPrefix + (error instanceof Error ? error.message : String(error)),
-        "error",
-      );
-    }
+  let layer = await pickLayer(deps, dialogs, deps.projectConfigExists() ? "local" : "global");
+  let lastLayer: Layer | undefined;
+  while (layer !== undefined) {
+    lastLayer = layer;
+    const switching = await runLayerMenu(deps, dialogs, layer);
+    if (!switching) break;
+    layer = await pickLayer(deps, dialogs, layer === "local" ? "global" : "local");
   }
-  deps.notify(`${L.saved}\n${formatCurrent(deps.loadConfig())}`, "info");
+  if (lastLayer !== undefined) {
+    deps.notify(`${L.saved}\n${formatCurrent(readView(deps, lastLayer).config)}`, "info");
+  }
 }

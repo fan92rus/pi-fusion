@@ -134,7 +134,10 @@ describe("lead restrictions: blocking", () => {
 
   it("blocks subagent when it is in an explicit blockedTools list, while fusion is on", () => {
     const host = makeHost();
-    registerLeadRestrictions(host.api, { ...enabled, blockedTools: ["write", "subagent"] });
+    registerLeadRestrictions(host.api, {
+      ...enabled,
+      blockedTools: () => ["write", "subagent"],
+    });
     expect(refusedReason(host, "subagent")).toBe(
       refusalText("subagent", emptyLeadRestrictionState()),
     );
@@ -142,7 +145,7 @@ describe("lead restrictions: blocking", () => {
 
   it("an explicit blockedTools without subagent lets subagent through (the list replaces the default)", () => {
     const host = makeHost();
-    registerLeadRestrictions(host.api, { ...enabled, blockedTools: ["write"] });
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: () => ["write"] });
     expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
   });
 
@@ -151,7 +154,7 @@ describe("lead restrictions: blocking", () => {
     registerLeadRestrictions(host.api, {
       ...enabled,
       isEnabled: () => false,
-      blockedTools: ["subagent"],
+      blockedTools: () => ["subagent"],
     });
     expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
   });
@@ -206,9 +209,45 @@ describe("lead restrictions: blocking", () => {
 
   it("uses a custom blocklist when one is given", () => {
     const host = makeHost();
-    registerLeadRestrictions(host.api, { ...enabled, blockedTools: ["write"] });
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: () => ["write"] });
     expect(refusedReason(host, "write")).not.toBe("");
     expect(host.fire("tool_call", toolCall("edit"))).toBeUndefined();
+  });
+
+  it("reads the blocked list on every check: a change after registration applies without restart (design D9)", () => {
+    const host = makeHost();
+    let list: string[] = ["write"];
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: () => list });
+    expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
+    list = ["write", "subagent"];
+    expect(refusedReason(host, "subagent")).toBe(
+      refusalText("subagent", emptyLeadRestrictionState()),
+    );
+    list = ["write"];
+    expect(host.fire("tool_call", toolCall("subagent"))).toBeUndefined();
+  });
+
+  it("calls the getter per check, never at registration (design D9)", () => {
+    const host = makeHost();
+    let reads = 0;
+    registerLeadRestrictions(host.api, {
+      ...enabled,
+      blockedTools: () => {
+        reads += 1;
+        return ["write"];
+      },
+    });
+    expect(reads).toBe(0);
+    host.fire("tool_call", toolCall("read"));
+    host.fire("tool_call", toolCall("write"));
+    expect(reads).toBe(2);
+  });
+
+  it("an empty list from the getter lets every tool through", () => {
+    const host = makeHost();
+    registerLeadRestrictions(host.api, { ...enabled, blockedTools: () => [] });
+    expect(host.fire("tool_call", toolCall("write"))).toBeUndefined();
+    expect(host.fire("tool_call", toolCall("bash"))).toBeUndefined();
   });
 
   it("blocks powershell by default, with no exception applied (OQ-1, TD-08)", () => {

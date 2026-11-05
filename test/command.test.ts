@@ -19,6 +19,7 @@ import {
   renderFusionHelp,
   runFusionCommand,
 } from "../extensions/pi-fusion/commands.ts";
+import type { FieldOrigins } from "../extensions/pi-fusion/config.ts";
 import { FUSION_CONFIG_DEFAULTS, type FusionConfig } from "../extensions/pi-fusion/config.ts";
 import {
   getSessionActivation,
@@ -30,9 +31,20 @@ const TOOL = "fusion_delegate";
 
 beforeEach(() => resetForTests());
 
-/** Records every dependency call so a test asserts on the exact effect set. */
-function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
+/**
+ * Records every dependency call so a test asserts on the exact effect set.
+ * `config` is the global file's content (its keys count as global-sourced);
+ * `project` is the project file's content, `null` when the file is absent.
+ */
+function makeDeps(
+  config?: Partial<FusionConfig>,
+  sessionId: string = "s1",
+  project: Partial<FusionConfig> | null = null,
+) {
   let current: FusionConfig = { ...FUSION_CONFIG_DEFAULTS, ...config };
+  // Keys the global file sets; persisting a full snapshot makes every key global.
+  const globalKeys = new Set<string>(Object.keys(config ?? {}));
+  let projectFile: Partial<FusionConfig> | null = project === null ? null : { ...project };
   let active: string[] = ["read", "bash"];
   const notices: Array<{ message: string; level: string }> = [];
   const calls: string[] = [];
@@ -47,15 +59,48 @@ function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
     },
   };
   const pi = { appendEntry: sm.appendEntry };
+  const loadGlobal = () => {
+    calls.push("load");
+    return { ...current };
+  };
+  const persistGlobal = (next: FusionConfig) => {
+    calls.push("persist");
+    current = { ...next };
+    for (const key of Object.keys(next)) globalKeys.add(key);
+  };
   const deps: FusionCommandDeps = {
     toolName: TOOL,
-    loadConfig: () => {
-      calls.push("load");
-      return { ...current };
+    loadGlobal,
+    persistGlobal,
+    loadEffective: () => {
+      calls.push("loadEffective");
+      return { ...current, ...(projectFile ?? {}) } as FusionConfig;
     },
-    persistConfig: (next: FusionConfig) => {
-      calls.push(`persist`);
-      current = { ...next };
+    getOrigins: () => {
+      const origins: Record<string, "local" | "global" | "default"> = {};
+      for (const key of Object.keys(FUSION_CONFIG_DEFAULTS)) {
+        origins[key] =
+          projectFile !== null && key in projectFile
+            ? "local"
+            : globalKeys.has(key)
+              ? "global"
+              : "default";
+      }
+      return origins as FieldOrigins;
+    },
+    projectConfigExists: () => projectFile !== null,
+    persistProjectDelta: (delta: Partial<FusionConfig>) => {
+      calls.push("persistProjectDelta");
+      const defined = Object.fromEntries(
+        Object.entries(delta).filter(([, value]) => value !== undefined),
+      );
+      projectFile = { ...(projectFile ?? {}), ...defined };
+    },
+    clearProjectOverride: (key: keyof FusionConfig) => {
+      calls.push("clearProjectOverride");
+      if (projectFile === null) return;
+      const { [key]: _removed, ...rest } = projectFile;
+      projectFile = Object.keys(rest).length > 0 ? rest : null;
     },
     getActiveTools: () => [...active],
     setActiveTools: (names: string[]) => {
@@ -95,6 +140,7 @@ function makeDeps(config?: Partial<FusionConfig>, sessionId: string = "s1") {
   return {
     deps,
     config: () => current,
+    project: () => projectFile,
     active: () => active,
     notices,
     calls,
@@ -394,6 +440,134 @@ describe("runFusionCommand: status", () => {
     expect(status).toContain("off");
     expect(status).toContain("(none");
     expect(status).toContain("agent fusion-worker: absent");
+  });
+});
+
+describe("runFusionCommand: status shows the source of each field (design D8)", () => {
+  it("suffixes every field with its local, global or default source", async () => {
+    const host = makeDeps({ workers: 8, workerModels: ["m/a", "m/b"] }, "s1", { workers: 8 });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(host.notices[0]?.level).toBe("info");
+    expect(status).toContain("workers: 8 [local]");
+    expect(status).toContain("models: m/a, m/b [global]");
+    expect(status).toContain("timeout: 600000 [default]");
+    expect(status).toContain("maxParallel: 3 [default]");
+    expect(status).toContain("requireApproval: true [default]");
+    expect(status).toContain("blockedTools: fusion_delegate, subagent, codemode [default]");
+    expect(status).toContain("leadBlockedTools: write, edit, bash, powershell, subagent [default]");
+    expect(status).toContain("researcherWeb: none [default]");
+    expect(host.persisted()).toBe(0);
+  });
+
+  it("shows global for global-only fields and never local when no project file exists", async () => {
+    const host = makeDeps({ workers: 4, maxParallel: 2 });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).toContain("workers: 4 [global]");
+    expect(status).toContain("maxParallel: 2 [global]");
+    expect(status).not.toContain("[local]");
+  });
+
+  it("shows maxSteps with its source: the field the status used to omit (review blocker)", async () => {
+    const host = makeDeps({ maxSteps: 25 });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).toContain("maxSteps: 25 [global]");
+  });
+
+  it("gives each of the nine config fields its own line with a source suffix", async () => {
+    const host = makeDeps({}, "s1", {
+      maxSteps: 12,
+      requireApproval: false,
+      researcherWeb: "both",
+    });
+    await runFusionCommand("status", host.deps);
+    const lines = (host.notices[0]?.message ?? "").split("\n");
+    const labels = [
+      "workers",
+      "maxParallel",
+      "timeout",
+      "maxSteps",
+      "models",
+      "requireApproval",
+      "blockedTools",
+      "leadBlockedTools",
+      "researcherWeb",
+    ];
+    for (const label of labels) {
+      const line = lines.find((row) => row.startsWith(`${label}: `));
+      expect(line, label).toBeDefined();
+      expect(line, label).toMatch(/ \[(local|global|default)\]$/);
+    }
+    expect(lines.find((row) => row.startsWith("maxSteps: "))).toBe("maxSteps: 12 [local]");
+    expect(lines.find((row) => row.startsWith("requireApproval: "))).toBe(
+      "requireApproval: false [local]",
+    );
+    expect(lines.find((row) => row.startsWith("researcherWeb: "))).toBe(
+      "researcherWeb: both [local]",
+    );
+  });
+
+  it("shows the effective value of a local override, not the global one", async () => {
+    const host = makeDeps({ workers: 4 }, "s1", { workers: 9 });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).toContain("workers: 9 [local]");
+    expect(status).not.toContain("workers: 4");
+  });
+});
+
+describe("runFusionCommand: shortcuts write to the layer the value came from (design D4)", () => {
+  it("workers writes the delta into an existing local file and leaves global untouched", async () => {
+    const host = makeDeps({ workers: 3 }, "s1", { workers: 4 });
+    await runFusionCommand("workers 5", host.deps);
+    expect(host.project()).toEqual({ workers: 5 });
+    expect(host.config().workers).toBe(3);
+    expect(host.persisted()).toBe(0);
+    expect(host.notices[0]?.level).toBe("info");
+  });
+
+  it("model writes only workerModels into an existing local file, even an empty one", async () => {
+    const host = makeDeps({ workerModels: ["m/global"] }, "s1", {});
+    await runFusionCommand("model vendor/a, vendor/b", host.deps);
+    expect(host.project()).toEqual({ workerModels: ["vendor/a", "vendor/b"] });
+    expect(host.config().workerModels).toEqual(["m/global"]);
+    expect(host.persisted()).toBe(0);
+  });
+
+  it("timeout writes taskTimeoutMs into an existing local file", async () => {
+    const host = makeDeps({ taskTimeoutMs: 600_000 }, "s1", { workers: 2 });
+    await runFusionCommand("timeout 300000", host.deps);
+    expect(host.project()).toEqual({ workers: 2, taskTimeoutMs: 300_000 });
+    expect(host.config().taskTimeoutMs).toBe(600_000);
+    expect(host.persisted()).toBe(0);
+  });
+
+  it("without a local file the shortcuts write global and never create the project file", async () => {
+    for (const arg of ["workers 5", "model vendor/a", "timeout 300000"]) {
+      const host = makeDeps({ workers: 3 });
+      await runFusionCommand(arg, host.deps);
+      expect(host.persisted(), arg).toBe(1);
+      expect(host.calls, arg).not.toContain("persistProjectDelta");
+      expect(host.project(), arg).toBeNull();
+      expect(host.notices[0]?.level, arg).toBe("info");
+    }
+    const host = makeDeps({ workers: 3 });
+    await runFusionCommand("workers 5", host.deps);
+    expect(host.config().workers).toBe(5);
+  });
+
+  it("a refused local write is reported as an error and changes neither layer", async () => {
+    const host = makeDeps({ workers: 3 }, "s1", {});
+    host.deps.persistProjectDelta = () => {
+      throw new Error("cannot write project config .pi/fusion.json: the file is not valid JSON");
+    };
+    await runFusionCommand("workers 5", host.deps);
+    expect(host.notices[0]?.level).toBe("error");
+    expect(host.notices[0]?.message).toContain("cannot write project config");
+    expect(host.config().workers).toBe(3);
+    expect(host.persisted()).toBe(0);
   });
 });
 

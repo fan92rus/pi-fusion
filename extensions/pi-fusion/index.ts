@@ -25,7 +25,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { FOLLOW_UP_MAX_CHARS, ORIGINAL_REQUEST_CHAR_BUDGET } from "./briefs.ts";
 import { type FusionCommandDeps, registerFusionCommand } from "./commands.ts";
-import { loadFusionConfig, persistFusionConfig } from "./config.ts";
+import {
+  clearProjectFusionOverride,
+  defaultFusionConfigPath,
+  loadEffectiveConfig,
+  loadFusionConfig,
+  persistFusionConfig,
+  persistProjectFusionDelta,
+  projectFusionConfigPath,
+} from "./config.ts";
 import { interactiveFusionConfig } from "./config-ui.ts";
 import { FusionContractSchema } from "./contract/schema.ts";
 import { validateFusionCall } from "./contract/validate.ts";
@@ -64,6 +72,12 @@ export { fusionFooterText } from "./session-state.ts";
 export interface FusionExtensionOptions {
   /** Override the fusion.json path; defaults to `~/.pi/agent/fusion.json`. */
   configPath?: string;
+  /**
+   * Override the project directory whose `.pi/fusion.json` layers over the
+   * global file. Production reads `process.cwd()` at call time, not at load
+   * (openspec fusion-project-config, design D6).
+   */
+  projectConfigDir?: string;
   /** Override the agents root the worker installs into; defaults to `~/.pi/agent`. */
   agentDir?: string;
 }
@@ -266,6 +280,14 @@ export function registerFusionDelegate(
   });
 }
 
+/** The effective configuration, read fresh on every call (design D6-D7). */
+function readEffective(options: FusionExtensionOptions) {
+  return loadEffectiveConfig(
+    options.configPath ?? defaultFusionConfigPath(),
+    options.projectConfigDir ?? process.cwd(),
+  );
+}
+
 /** Where the worker agent must exist for this extension's options. */
 function workerAgentTargetPath(agentDir: string | undefined): string {
   return agentDir === undefined
@@ -291,10 +313,17 @@ function makeFusionCommandDeps(
   // mode has no dialog-capable UI (headless — /fusion config refuses).
   const dialogs = ctx.hasUI ? ctx.ui : null;
   const sessionManager = ctx.sessionManager;
+  const globalPath = configPath ?? defaultFusionConfigPath();
+  const projectDir = () => options.projectConfigDir ?? process.cwd();
   const deps: FusionCommandDeps = {
     toolName: FUSION_TOOL_NAME,
-    loadConfig: () => loadFusionConfig(configPath),
-    persistConfig: (next) => persistFusionConfig(next, configPath),
+    loadEffective: () => readEffective(options).config,
+    getOrigins: () => readEffective(options).origins,
+    loadGlobal: () => loadFusionConfig(globalPath),
+    persistGlobal: (next) => persistFusionConfig(next, globalPath),
+    projectConfigExists: () => existsSync(projectFusionConfigPath(projectDir())),
+    persistProjectDelta: (delta) => persistProjectFusionDelta(delta, projectDir()),
+    clearProjectOverride: (key) => clearProjectFusionOverride(key, projectDir()),
     getActiveTools: () => pi.getActiveTools(),
     setActiveTools: (toolNames) => pi.setActiveTools(toolNames),
     agentInstalled: () => existsSync(workerAgentTargetPath(agentDir)),
@@ -335,10 +364,9 @@ export default function fusionExtension(
   pi: ExtensionAPI,
   options: FusionExtensionOptions = {},
 ): void {
-  const startup = loadFusionConfig(options.configPath);
-  registerFusionDelegate(pi, () => loadFusionConfig(options.configPath));
+  registerFusionDelegate(pi, () => readEffective(options).config);
   registerFusionGuidance(pi, (ctx) => {
-    const config = loadFusionConfig(options.configPath);
+    const { config } = readEffective(options);
     const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
     let enabled = false;
     if (sm) {
@@ -360,14 +388,14 @@ export default function fusionExtension(
   // F19: while fusion is on, the lead session cannot call its own
   // write/edit/bash — the doing belongs to the workers. isEnabled is read
   // fresh per call, so /fusion off frees the lead without a reload; the
-  // blocked list binds the startup leadBlockedTools (the command never edits
-  // that field).
+  // blocked list is read fresh per check too, so a project override of
+  // leadBlockedTools applies without a restart (design D9).
   registerLeadRestrictions(pi, {
     isEnabled: (ctx) => {
       const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
       if (!sm) return false; // inert
       return isSessionEnabled(sm as never); // may throw -> fail-closed in restrictions
     },
-    blockedTools: startup.leadBlockedTools,
+    blockedTools: () => readEffective(options).config.leadBlockedTools,
   });
 }

@@ -48,6 +48,45 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 
 Every field is re-read per call; the operator's edits apply without a reload.
 
+### Project configuration — `.pi/fusion.json`
+
+A project can override the global file per field with `<cwd>/.pi/fusion.json`
+(the directory pi was started in). It takes the same fields as the global file.
+
+- **Per-field overlay, replace not merge.** A field present and valid in the
+  project file replaces the global value; the rest is inherited. Lists
+  (`workerModels`, `blockedTools`, `leadBlockedTools`) are replaced whole — a
+  local list does not extend the global one. An explicit `[]` is a valid
+  override (e.g. `"leadBlockedTools": []` lifts the lead's blocks in this
+  project only).
+- **Invalid field = inherit + warn.** A bad value for one field is ignored
+  with a warning; the field falls back to the lower layer.
+- **Broken file = ignored on read, refused on write.** A project file that is
+  not valid JSON or not a JSON object is ignored as a whole on read (one
+  warning). Writes to it (menu edits, resets, shortcuts) are refused with the
+  path and the reason; the file is never overwritten silently.
+- **`/fusion config` switcher.** The first screen picks the layer: Global
+  (`~/.pi/agent/fusion.json`) or Local (`.pi/fusion.json`); the Local label says
+  whether the project file exists. Switching writes nothing. In the Local
+  layer every field shows its effective value with its source: `[local]`,
+  `[global]` or `[default]`. Editing a `[local]` field saves at once. Editing an
+  inherited field asks for confirmation first ("override here?"), and that
+  confirm is what creates the override. A `[local]` field also offers
+  "Reset to inherited", which removes the key; when the last key goes, the
+  project file is deleted. `↩️ Слой / Layer` returns to the switcher.
+- **Shortcuts follow the file.** `/fusion workers|model|timeout` write to
+  `.pi/fusion.json` when it exists, otherwise to the global file. They never
+  create the project file.
+- **Status.** `/fusion status` shows the source of each field: `[local]`,
+  `[global]` or `[default]`.
+- **Lead gate reads fresh.** The lead's `leadBlockedTools` is read on every
+  check, so a local change applies without restarting pi.
+- **Trust.** pi's project trust does not gate `.pi/fusion.json`: fusion reads
+  it itself as soon as pi runs in the directory. Cloning a repo that ships
+  `.pi/fusion.json` changes this project's fusion configuration (not the global
+  one, and no code runs from it). Do not commit a file you do not trust, and
+  review it when you clone someone else's repository.
+
 ## Activation (session-only)
 
 Fusion activation lives in the **current session only** — there is no global

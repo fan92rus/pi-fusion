@@ -1,13 +1,25 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clearProjectFusionOverride,
   defaultFusionConfigPath,
   FUSION_CONFIG_DEFAULTS,
   type FusionConfig,
+  loadEffectiveConfig,
   loadFusionConfig,
   persistFusionConfig,
+  persistProjectFusionDelta,
+  projectFusionConfigPath,
 } from "../extensions/pi-fusion/config.ts";
 
 const renameState = vi.hoisted(() => ({ fail: false }));
@@ -321,6 +333,392 @@ describe("config: fusion.json load/persist", () => {
       expect(() => persistFusionConfig(FUSION_CONFIG_DEFAULTS, path)).toThrow("disk gone");
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ workers: 9 });
       expect(readdirSync(dir)).toEqual(["fusion.json"]);
+    });
+  });
+});
+
+describe("config: layered project overrides (.pi/fusion.json)", () => {
+  let dir = "";
+  let globalPath = "";
+  let projectDir = "";
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "fusion-layers-"));
+    globalPath = join(dir, "global", "fusion.json");
+    projectDir = join(dir, "project");
+    mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    renameState.fail = false;
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeGlobal = (document: unknown): void => {
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(globalPath, JSON.stringify(document), "utf8");
+  };
+  const localPath = (): string => join(projectDir, ".pi", "fusion.json");
+  const writeLocal = (content: string): void => {
+    mkdirSync(join(projectDir, ".pi"), { recursive: true });
+    writeFileSync(localPath(), content, "utf8");
+  };
+  const readLocal = (): Record<string, unknown> =>
+    JSON.parse(readFileSync(localPath(), "utf8")) as Record<string, unknown>;
+  const quietWarn = () => vi.spyOn(console, "warn").mockImplementation(() => {});
+  const warnings = (): string[] =>
+    vi.mocked(console.warn).mock.calls.map((call) => String(call[0]));
+
+  describe("projectFusionConfigPath", () => {
+    it("joins the project directory with .pi/fusion.json", () => {
+      expect(projectFusionConfigPath(projectDir)).toBe(join(projectDir, ".pi", "fusion.json"));
+    });
+  });
+
+  describe("loadEffectiveConfig", () => {
+    it("without a project file the result equals the global layer, silently", () => {
+      const warn = quietWarn();
+      writeGlobal({ workers: 4, workerModels: ["vendor/a"] });
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config).toEqual(loadFusionConfig(globalPath));
+      expect(config.workers).toBe(4);
+      expect(origins.workers).toBe("global");
+      expect(origins.maxSteps).toBe("default");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("with neither file every field is the design default and origin default", () => {
+      const warn = quietWarn();
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config).toEqual(FUSION_CONFIG_DEFAULTS);
+      expect(Object.keys(origins).sort()).toEqual(Object.keys(FUSION_CONFIG_DEFAULTS).sort());
+      expect(Object.values(origins).every((origin) => origin === "default")).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("a valid project file overrides its field and the rest comes from global", () => {
+      quietWarn();
+      writeGlobal({ workers: 4, maxSteps: 30 });
+      writeLocal(JSON.stringify({ workers: 8 }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config.workers).toBe(8);
+      expect(config.maxSteps).toBe(30);
+      expect(config.requireApproval).toBe(FUSION_CONFIG_DEFAULTS.requireApproval);
+      expect(origins.workers).toBe("local");
+      expect(origins.maxSteps).toBe("global");
+      expect(origins.requireApproval).toBe("default");
+    });
+
+    it("a partial project file that sets only taskTimeoutMs keeps every other global field", () => {
+      quietWarn();
+      writeGlobal({ workers: 4, workerModels: ["vendor/a"], maxSteps: 30 });
+      writeLocal(JSON.stringify({ taskTimeoutMs: 120_000 }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config).toEqual({
+        ...loadFusionConfig(globalPath),
+        taskTimeoutMs: 120_000,
+      });
+      expect(origins.taskTimeoutMs).toBe("local");
+      expect(origins.workers).toBe("global");
+    });
+
+    it("a local model list replaces the global one without merging", () => {
+      quietWarn();
+      writeGlobal({ workerModels: ["vendor/a", "vendor/b"] });
+      writeLocal(JSON.stringify({ workerModels: ["vendor/c"] }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect([...config.workerModels]).toEqual(["vendor/c"]);
+      expect(origins.workerModels).toBe("local");
+    });
+
+    it("a local leadBlockedTools list replaces the global one, not extends it", () => {
+      quietWarn();
+      writeGlobal({ leadBlockedTools: ["write", "edit", "bash", "subagent"] });
+      writeLocal(JSON.stringify({ leadBlockedTools: ["write", "edit"] }));
+      const { config } = loadEffectiveConfig(globalPath, projectDir);
+      expect([...config.leadBlockedTools]).toEqual(["write", "edit"]);
+    });
+
+    it("an explicit empty list in the project file is a valid override", () => {
+      const warn = quietWarn();
+      writeGlobal({ workerModels: ["vendor/a"] });
+      writeLocal(JSON.stringify({ workerModels: [], leadBlockedTools: [] }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect([...config.workerModels]).toEqual([]);
+      expect([...config.leadBlockedTools]).toEqual([]);
+      expect(origins.workerModels).toBe("local");
+      expect(origins.leadBlockedTools).toBe("local");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("an invalid project field inherits and warns while other local fields still apply", () => {
+      const warn = quietWarn();
+      writeGlobal({ workers: 4 });
+      writeLocal(JSON.stringify({ workers: 0, maxSteps: 7 }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config.workers).toBe(4);
+      expect(origins.workers).toBe("global");
+      expect(config.maxSteps).toBe(7);
+      expect(origins.maxSteps).toBe("local");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toContain(localPath());
+      expect(warnings()[0]).toContain('"workers"');
+    });
+
+    it("an invalid project field with no global value falls back to the default", () => {
+      quietWarn();
+      writeLocal(JSON.stringify({ requireApproval: "no" }));
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config.requireApproval).toBe(FUSION_CONFIG_DEFAULTS.requireApproval);
+      expect(origins.requireApproval).toBe("default");
+    });
+
+    it("a broken project JSON is ignored as a whole, with one warning naming the path", () => {
+      const warn = quietWarn();
+      writeGlobal({ workers: 4 });
+      writeLocal("{ not json");
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config).toEqual(loadFusionConfig(globalPath));
+      expect(origins.workers).toBe("global");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toContain(localPath());
+      expect(warnings()[0]).toContain("not valid JSON");
+    });
+
+    it.each([
+      ["[]", "array"],
+      ["null", "null"],
+      ['"x"', "string"],
+      ["42", "number"],
+    ])(
+      "a project document that is a %s (%s) is ignored as a whole, with one warning",
+      (content) => {
+        const warn = quietWarn();
+        writeGlobal({ workers: 4 });
+        writeLocal(content);
+        const { config } = loadEffectiveConfig(globalPath, projectDir);
+        expect(config).toEqual(loadFusionConfig(globalPath));
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warnings()[0]).toContain("not a JSON object");
+      },
+    );
+
+    it("an enabled key in the project file is retired: one warning, ignored", async () => {
+      // Fresh module instance: the once-per-process retired flag is module state.
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      const warn = quietWarn();
+      writeLocal(JSON.stringify({ enabled: false, workers: 6 }));
+      const first = fresh.loadEffectiveConfig(globalPath, projectDir);
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toContain('field "enabled" is retired');
+      expect(first.config).not.toHaveProperty("enabled");
+      expect(first.origins).not.toHaveProperty("enabled");
+      expect(first.config.workers).toBe(6);
+    });
+
+    it("a project value equal to the global one is still reported as local", () => {
+      quietWarn();
+      writeGlobal({ workers: 4 });
+      writeLocal(JSON.stringify({ workers: 4 }));
+      expect(loadEffectiveConfig(globalPath, projectDir).origins.workers).toBe("local");
+    });
+
+    it("distinguishes a valid global value from a default, and an invalid global falls back to default", () => {
+      const warn = quietWarn();
+      writeGlobal({ workers: 4 });
+      const valid = loadEffectiveConfig(globalPath, projectDir);
+      expect(valid.origins.workers).toBe("global");
+      expect(valid.origins.maxParallel).toBe("default");
+
+      writeGlobal({ workers: 0 });
+      const invalid = loadEffectiveConfig(globalPath, projectDir);
+      expect(invalid.config.workers).toBe(FUSION_CONFIG_DEFAULTS.workers);
+      expect(invalid.origins.workers).toBe("default");
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("loadFusionConfig keeps today's behaviour: per-field warn, default kept, same bounds", () => {
+      const warn = quietWarn();
+      writeGlobal({ workers: 0, maxSteps: 12 });
+      const loaded = loadFusionConfig(globalPath);
+      expect(loaded.workers).toBe(FUSION_CONFIG_DEFAULTS.workers);
+      expect(loaded.maxSteps).toBe(12);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toBe(
+        `[pi-fusion] ${globalPath}: field "workers" has an invalid value, keeping the default`,
+      );
+    });
+  });
+
+  describe("warn once per path (review major 2)", () => {
+    // The config is read on every tool call and every /fusion status; a broken
+    // file must not repeat its warning each time (once per process, per path).
+    it("a broken project file warns once across repeated effective loads", async () => {
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      quietWarn();
+      writeGlobal({ workers: 4 });
+      writeLocal("{ not json");
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      expect(warnings().filter((text) => text.includes(localPath()))).toHaveLength(1);
+    });
+
+    it("a second broken project file in another directory still warns once", async () => {
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      quietWarn();
+      const otherDir = join(dir, "other-project");
+      mkdirSync(join(otherDir, ".pi"), { recursive: true });
+      writeFileSync(join(otherDir, ".pi", "fusion.json"), "[]", "utf8");
+      writeLocal("{ not json");
+      for (let i = 0; i < 2; i++) {
+        fresh.loadEffectiveConfig(globalPath, projectDir);
+        fresh.loadEffectiveConfig(globalPath, otherDir);
+      }
+      expect(warnings().filter((text) => text.includes(localPath()))).toHaveLength(1);
+      expect(
+        warnings().filter((text) => text.includes(join(otherDir, ".pi", "fusion.json"))),
+      ).toHaveLength(1);
+    });
+
+    it("a broken global file warns once across repeated loads", async () => {
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      quietWarn();
+      mkdirSync(dirname(globalPath), { recursive: true });
+      writeFileSync(globalPath, "{ not json", "utf8");
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      fresh.loadFusionConfig(globalPath);
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      expect(warnings().filter((text) => text.includes(globalPath))).toHaveLength(1);
+    });
+
+    it("an invalid field value warns once across repeated effective loads", async () => {
+      vi.resetModules();
+      const fresh = await import("../extensions/pi-fusion/config.ts");
+      quietWarn();
+      writeLocal(JSON.stringify({ workers: 0 }));
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      fresh.loadEffectiveConfig(globalPath, projectDir);
+      expect(warnings().filter((text) => text.includes('"workers"'))).toHaveLength(1);
+    });
+  });
+
+  describe("persistProjectFusionDelta", () => {
+    it("creates the project file with only the delta keys when it is absent", () => {
+      persistProjectFusionDelta({ workers: 8 }, projectDir);
+      expect(readLocal()).toEqual({ workers: 8 });
+    });
+
+    it("merges only the delta keys and preserves unknown keys", () => {
+      writeLocal(JSON.stringify({ workers: 2, note: "keep", nested: { a: 1 } }));
+      persistProjectFusionDelta({ maxSteps: 10, workers: 8 }, projectDir);
+      expect(readLocal()).toEqual({ workers: 8, note: "keep", nested: { a: 1 }, maxSteps: 10 });
+    });
+
+    it("writes an explicit empty list as a value", () => {
+      writeLocal(JSON.stringify({ workers: 2 }));
+      persistProjectFusionDelta({ workerModels: [] }, projectDir);
+      expect(readLocal()).toEqual({ workers: 2, workerModels: [] });
+    });
+
+    it("skips undefined delta values instead of deleting or writing them", () => {
+      writeLocal(JSON.stringify({ workers: 2 }));
+      persistProjectFusionDelta({ workers: undefined, maxSteps: 5 }, projectDir);
+      expect(readLocal()).toEqual({ workers: 2, maxSteps: 5 });
+    });
+
+    it.each([
+      ["{ not json", "not valid JSON"],
+      ["[]", "not a JSON object"],
+      ["null", "not a JSON object"],
+      ['"x"', "not a JSON object"],
+    ])(
+      "refuses to write over a project file that is %s, naming path and reason",
+      (content, reason) => {
+        writeLocal(content);
+        expect(() => persistProjectFusionDelta({ workers: 8 }, projectDir)).toThrow(localPath());
+        expect(() => persistProjectFusionDelta({ workers: 8 }, projectDir)).toThrow(reason);
+        expect(readFileSync(localPath(), "utf8")).toBe(content);
+        expect(readdirSync(join(projectDir, ".pi"))).toEqual(["fusion.json"]);
+      },
+    );
+  });
+
+  describe("clearProjectFusionOverride", () => {
+    it("removes only the given key", () => {
+      writeLocal(JSON.stringify({ workers: 8, note: "keep" }));
+      clearProjectFusionOverride("workers", projectDir);
+      expect(readLocal()).toEqual({ note: "keep" });
+    });
+
+    it("deletes the file when no keys are left", () => {
+      writeLocal(JSON.stringify({ workers: 8 }));
+      clearProjectFusionOverride("workers", projectDir);
+      expect(existsSync(localPath())).toBe(false);
+    });
+
+    it("never leaves an empty object: the file survives while unknown keys remain", () => {
+      writeLocal(JSON.stringify({ unknown: true, workers: 8, maxSteps: 9 }));
+      clearProjectFusionOverride("workers", projectDir);
+      clearProjectFusionOverride("maxSteps", projectDir);
+      expect(readLocal()).toEqual({ unknown: true });
+      clearProjectFusionOverride("unknown" as keyof FusionConfig, projectDir);
+      expect(existsSync(localPath())).toBe(false);
+    });
+
+    it("is a no-op for an absent file or an absent key, leaving bytes untouched", () => {
+      clearProjectFusionOverride("workers", projectDir);
+      expect(existsSync(localPath())).toBe(false);
+      const content = JSON.stringify({ note: "keep" }, null, 4);
+      writeLocal(content);
+      clearProjectFusionOverride("workers", projectDir);
+      expect(readFileSync(localPath(), "utf8")).toBe(content);
+    });
+
+    it.each([
+      ["{ not json", "not valid JSON"],
+      ["[]", "not a JSON object"],
+      ['"x"', "not a JSON object"],
+    ])("refuses to clear a project file that is %s, naming path and reason", (content, reason) => {
+      writeLocal(content);
+      expect(() => clearProjectFusionOverride("workers", projectDir)).toThrow(localPath());
+      expect(() => clearProjectFusionOverride("workers", projectDir)).toThrow(reason);
+      expect(readFileSync(localPath(), "utf8")).toBe(content);
+    });
+  });
+
+  describe("atomic project writes", () => {
+    it("leaves no temporary files after a successful delta write or clear", () => {
+      persistProjectFusionDelta({ workers: 8 }, projectDir);
+      expect(readdirSync(join(projectDir, ".pi"))).toEqual(["fusion.json"]);
+      persistProjectFusionDelta({ maxSteps: 9 }, projectDir);
+      clearProjectFusionOverride("workers", projectDir);
+      expect(readdirSync(join(projectDir, ".pi"))).toEqual(["fusion.json"]);
+    });
+
+    it("keeps the previous project file intact when the rename fails", () => {
+      writeLocal(JSON.stringify({ workers: 2 }));
+      renameState.fail = true;
+      expect(() => persistProjectFusionDelta({ workers: 9 }, projectDir)).toThrow("disk gone");
+      expect(readLocal()).toEqual({ workers: 2 });
+      expect(readdirSync(join(projectDir, ".pi"))).toEqual(["fusion.json"]);
+    });
+  });
+
+  describe("round trip through the effective config", () => {
+    it("a delta written locally is read back with local origin", () => {
+      quietWarn();
+      writeGlobal({ workers: 4 });
+      persistProjectFusionDelta({ workers: 8 }, projectDir);
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(config.workers).toBe(8);
+      expect(origins.workers).toBe("local");
     });
   });
 });

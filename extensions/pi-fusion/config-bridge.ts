@@ -1,20 +1,24 @@
 /**
  * Read-only fusion configuration (design rev.5.2 §4 `config-bridge.ts`, §5
- * integration table, §13 feature flag). `~/.pi/agent/fusion.json` is read once
- * when the extension loads; a missing file, an invalid JSON document or an
- * ill-typed field falls back to the design defaults for that scope, so the
- * extension never fails to load over its own settings.
+ * integration table, §13 feature flag). The effective settings are read fresh
+ * on every call: the global `~/.pi/agent/fusion.json` with the project's
+ * `.pi/fusion.json` overriding it per field (openspec fusion-project-config,
+ * design D7). A missing file, an invalid JSON document or an ill-typed field
+ * falls back to the defaults for that scope, so the extension never fails to
+ * load over its own settings.
  *
  * Activation is NOT part of this snapshot: it is per session (session-state.ts),
  * and the retired `enabled` field in fusion.json is ignored (config.ts warns).
- * Production reads go through config.ts `loadFusionConfig`; this is the thin
- * read wrapper kept for the bridge tests.
+ * The read itself is config.ts `loadEffectiveConfig`; this module keeps only the
+ * six fields the fan-out and the guidance need, so the bridge tests and the
+ * production read cannot drift apart. It carries no origins (design D7).
  */
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+
+import { defaultFusionConfigPath, loadEffectiveConfig } from "./config.ts";
 import type { FanoutConfig } from "./pool/fanout.ts";
-import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
+import type { ResearcherWebMode } from "./types.ts";
+
+export { defaultFusionConfigPath } from "./config.ts";
 
 export interface FusionConfig extends FanoutConfig {
   /**
@@ -34,48 +38,24 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   researcherWeb: "none",
 });
 
-/** The settings file the lead operator edits: `~/.pi/agent/fusion.json`. */
-export function defaultFusionConfigPath(): string {
-  return join(homedir(), ".pi", "agent", "fusion.json");
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-
-function isModelList(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.every((model) => typeof model === "string" && model.trim().length > 0)
-  );
-}
-
 /**
- * Reads the settings once; every field is taken only when it has the right
- * type. Each call returns a new frozen snapshot, so callers cannot change the
- * defaults or each other's view.
+ * Reads the effective settings once per call; every field comes from the
+ * project file when it is valid there, else from the global file, else the
+ * defaults. `projectDir` defaults to `process.cwd()` at call time, as the
+ * production extension does. Each call returns a new frozen snapshot, so
+ * callers cannot change the defaults or each other's view.
  */
-export function readFusionConfig(path: string = defaultFusionConfigPath()): Readonly<FusionConfig> {
-  let fields: Record<string, unknown> = {};
-  try {
-    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-      fields = raw as Record<string, unknown>;
-    }
-  } catch {
-    // Missing or unreadable file, or invalid JSON: every field keeps its default.
-  }
-  const pick = <T>(value: unknown, accept: (v: unknown) => v is T, fallback: T): T =>
-    accept(value) ? value : fallback;
-  const isResearcherWebMode = (v: unknown): v is ResearcherWebMode =>
-    typeof v === "string" && (RESEARCHER_WEB_MODES as readonly string[]).includes(v);
-  const defaults = FUSION_CONFIG_DEFAULTS;
+export function readFusionConfig(
+  path: string = defaultFusionConfigPath(),
+  projectDir: string = process.cwd(),
+): Readonly<FusionConfig> {
+  const { config } = loadEffectiveConfig(path, projectDir);
   return Object.freeze({
-    workers: pick(fields.workers, isPositiveInteger, defaults.workers),
-    maxParallel: pick(fields.maxParallel, isPositiveInteger, defaults.maxParallel),
-    taskTimeoutMs: pick(fields.taskTimeoutMs, isPositiveInteger, defaults.taskTimeoutMs),
-    workerModels: pick(fields.workerModels, isModelList, []),
-    maxSteps: pick(fields.maxSteps, isPositiveInteger, defaults.maxSteps),
-    researcherWeb: pick(fields.researcherWeb, isResearcherWebMode, defaults.researcherWeb),
+    workers: config.workers,
+    maxParallel: config.maxParallel,
+    taskTimeoutMs: config.taskTimeoutMs,
+    workerModels: [...config.workerModels],
+    maxSteps: config.maxSteps,
+    researcherWeb: config.researcherWeb,
   });
 }

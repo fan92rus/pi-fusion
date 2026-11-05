@@ -20,7 +20,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 // The full persisted config (config.ts), not the read-only bridge view: the
 // command persists whole snapshots, so dropping the approval/tool fields
 // would silently reset them (bd pi-fusion-chq review fix).
-import { FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
+import { type FieldOrigins, FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
 import { getSessionActivation, type SessionActivation } from "./session-state.ts";
 import type { InstallWorkerAgentResult, RoleProfileStatus } from "./worker-install.ts";
 
@@ -88,10 +88,20 @@ const NAME_GUTTER = 2;
  */
 export interface FusionCommandDeps {
   toolName: string;
-  /** Fresh read of fusion.json — the truth a restart would see. */
-  loadConfig(): FusionConfig;
-  /** Atomic persist of the changed snapshot (tmp+rename in config.ts). */
-  persistConfig(next: FusionConfig): void;
+  /** Effective configuration: the global file overridden per field by the project file (fresh read). */
+  loadEffective(): FusionConfig;
+  /** Where each field's effective value comes from: local, global or default. */
+  getOrigins(): FieldOrigins;
+  /** Fresh read of the global file alone (the global layer's view). */
+  loadGlobal(): FusionConfig;
+  /** Atomic full-snapshot persist of the global file (tmp+rename in config.ts). */
+  persistGlobal(next: FusionConfig): void;
+  /** Whether `<cwd>/.pi/fusion.json` exists. */
+  projectConfigExists(): boolean;
+  /** Merges the delta's keys into the project file (refused when that file is broken). */
+  persistProjectDelta(delta: Partial<FusionConfig>): void;
+  /** Removes one key from the project file; the file goes when it is empty. */
+  clearProjectOverride(key: keyof FusionConfig): void;
   getActiveTools(): string[];
   setActiveTools(toolNames: string[]): void;
   /** Whether `~/.pi/agent/agents/fusion-worker.md` resolves. */
@@ -273,14 +283,24 @@ export function turnFusion(deps: FusionCommandDeps, enabled: boolean): void {
   deps.setStatus("fusion", fusionFooterText(deps.sessionManager));
 }
 
+/** The effective configuration; without the layered ops the global file alone. */
+/** Status suffix of one field (design D8): where its effective value comes from. */
+function sourceTag(origins: FieldOrigins, key: keyof FusionConfig): string {
+  return ` [${origins[key]}]`;
+}
+
 function showStatus(deps: FusionCommandDeps): void {
   const activation = deps.getActivation();
-  const config = deps.loadConfig();
+  const config = deps.loadEffective();
+  const origins = deps.getOrigins();
+  const tag = (key: keyof FusionConfig): string => sourceTag(origins, key);
   const models = config.workerModels;
   const modelList =
     models.length > 0
       ? models.join(", ")
       : "(none — every fan-out is refused until models are set)";
+  const list = (items: readonly string[]): string =>
+    items.length > 0 ? items.join(", ") : "(none)";
   const profiles = deps
     .roleProfileStatuses()
     .map((row) => `agent ${row.name}: ${row.status}`)
@@ -289,11 +309,15 @@ function showStatus(deps: FusionCommandDeps): void {
     [
       `fusion: ${activation.enabled ? "on" : "off"} (enabled: ${activation.enabled}, source: ${activation.source})`,
       profiles,
-      `researcherWeb: ${config.researcherWeb}`,
-      `lead gate: ${config.leadBlockedTools.join(", ")}`,
-      `workers: ${config.workers} (maxParallel ${config.maxParallel})`,
-      `models: ${modelList}`,
-      `timeout: ${config.taskTimeoutMs} ms per task`,
+      `researcherWeb: ${config.researcherWeb}${tag("researcherWeb")}`,
+      `requireApproval: ${config.requireApproval}${tag("requireApproval")}`,
+      `leadBlockedTools: ${list(config.leadBlockedTools)}${tag("leadBlockedTools")}`,
+      `blockedTools: ${list(config.blockedTools)}${tag("blockedTools")}`,
+      `workers: ${config.workers}${tag("workers")}`,
+      `maxParallel: ${config.maxParallel}${tag("maxParallel")}`,
+      `models: ${modelList}${tag("workerModels")}`,
+      `timeout: ${config.taskTimeoutMs}${tag("taskTimeoutMs")}`,
+      `maxSteps: ${config.maxSteps}${tag("maxSteps")}`,
     ].join("\n"),
   );
 }
@@ -319,8 +343,10 @@ function setNumberField(
     deps.notify(`${label} needs a whole number from ${min} to ${max}, e.g. ${usage}`, "error");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), [field]: value });
-  deps.notify(`${label}: ${value} — persisted to fusion.json.`);
+  const delta: Partial<FusionConfig> = { [field]: value };
+  const target = persistShortcut(deps, delta);
+  if (target === null) return;
+  deps.notify(`${label}: ${value} — persisted to ${target}.`);
 }
 
 function setModels(deps: FusionCommandDeps, argument: string): void {
@@ -329,8 +355,30 @@ function setModels(deps: FusionCommandDeps, argument: string): void {
     deps.notify("model needs at least one id, e.g. /fusion model vendor/name, other/name", "error");
     return;
   }
-  deps.persistConfig({ ...deps.loadConfig(), workerModels: models });
-  deps.notify(`models: ${models.join(", ")} — persisted to fusion.json.`);
+  const target = persistShortcut(deps, { workerModels: models });
+  if (target === null) return;
+  deps.notify(`models: ${models.join(", ")} — persisted to ${target}.`);
+}
+
+/**
+ * Writes a shortcut's change where the value came from (design D4): an existing
+ * project file takes just the delta; without one the global file takes a full
+ * snapshot, and a shortcut never creates the project file. Returns the file's
+ * label for the notice, or `null` after notifying a refused write (the message
+ * names the path and the cause; nothing was changed).
+ */
+function persistShortcut(deps: FusionCommandDeps, delta: Partial<FusionConfig>): string | null {
+  try {
+    if (deps.projectConfigExists()) {
+      deps.persistProjectDelta(delta);
+      return "the project .pi/fusion.json";
+    }
+    deps.persistGlobal({ ...deps.loadGlobal(), ...delta });
+    return "fusion.json";
+  } catch (error) {
+    deps.notify(`not saved: ${error instanceof Error ? error.message : String(error)}`, "error");
+    return null;
+  }
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

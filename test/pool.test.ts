@@ -13,6 +13,7 @@ import type {
   ValidatedTask,
 } from "../extensions/pi-fusion/contract/validate.ts";
 import {
+  type CooldownEntry,
   type CooldownStore,
   createCooldownStore,
   formatCooldownRemaining,
@@ -610,16 +611,40 @@ describe("empty rotation (B-FINAL, FR-003)", () => {
 });
 
 describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
+  // Blocker 3.1: the cooldown row is pinned STRICTLY — the reason carries the
+  // number of SKIPPED models AND their time remainders (spec "Fully cooled
+  // rotation is fail-fast": the clamp chain MUST name the skipped count and the
+  // time remainders), formatted by the pool's own `formatCooldownRemaining`.
+  const coolingTwo: CooldownEntry[] = [
+    { model: "model-a", reason: "window", remainingMs: 270_000 },
+    { model: "model-b", reason: "timeout", remainingMs: 90_000 },
+  ];
   it("plan: 3 models, 2 cooling, workers 4, maxParallel 8, 4 tasks → cooldown row 4 → 2", () => {
     const plan = planFanoutWidth(
       makeCall(["t1", "t2", "t3", "t4"].map((id) => makeTask(id))),
       { ...BASE_CONFIG, maxParallel: 8, workerModels: ["model-a", "model-b", "model-c"] },
-      1,
+      coolingTwo,
     );
     expect(plan.width).toBe(2);
     expect(plan.clamps).toStrictEqual([
-      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+      {
+        field: "cooldown",
+        requested: 4,
+        applied: 2,
+        reason:
+          `per-model cap 2 × 1 of 3 model(s) cool — ${coolingTwo.length} model(s) cooling down ` +
+          `(up to ${formatCooldownRemaining(270_000)} left: ` +
+          `model-a window ${formatCooldownRemaining(270_000)}, ` +
+          `model-b timeout ${formatCooldownRemaining(90_000)})`,
+      },
     ]);
+    // The pin says it in the reviewer's words: the count AND a remainder token.
+    const reason = plan.clamps[0]?.reason ?? "";
+    expect(reason).toMatch(/cooling down/);
+    expect(reason).toMatch(/\d+s/);
+    expect(reason).toContain(`${coolingTwo.length} model(s) cooling down`);
+    expect(reason).toContain(formatCooldownRemaining(270_000));
+    expect(reason).toContain(formatCooldownRemaining(90_000));
   });
 
   it("plan: a non-binding cooldown adds no row (3 models, 1 cooling, workers 3)", () => {
@@ -631,7 +656,7 @@ describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
         maxParallel: 8,
         workerModels: ["model-a", "model-b", "model-c"],
       },
-      2,
+      [{ model: "model-a", reason: "window", remainingMs: 45_000 }],
     );
     expect(plan.width).toBe(3);
     expect(plan.clamps).toStrictEqual([]);
@@ -643,24 +668,42 @@ describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
         ["t1", "t2", "t3"].map((id) => makeTask(id)),
         4,
       ),
-      { ...BASE_CONFIG, maxParallel: 8, workerModels: ["model-a", "model-b", "model-c"] },
-      0,
+      {
+        ...BASE_CONFIG,
+        maxParallel: 8,
+        workerModels: ["model-a", "model-b", "model-c"],
+      },
+      [
+        { model: "model-a", reason: "window", remainingMs: 600_000 },
+        { model: "model-b", reason: "timeout", remainingMs: 90_000 },
+        { model: "model-c", reason: "window", remainingMs: 45_500 },
+      ],
     );
     expect(plan.width).toBe(0);
     expect(plan.clamps).toStrictEqual([
-      { field: "cooldown", requested: 4, applied: 0, reason: expect.any(String) },
+      {
+        field: "cooldown",
+        requested: 4,
+        applied: 0,
+        reason:
+          `all 3 model(s) cooling down (up to ${formatCooldownRemaining(600_000)} left: ` +
+          `model-a window ${formatCooldownRemaining(600_000)}, ` +
+          `model-b timeout ${formatCooldownRemaining(90_000)}, ` +
+          `model-c window ${formatCooldownRemaining(45_500)}) — the rotation is empty at plan time`,
+      },
     ]);
+    // Even the fail-fast row carries the remainders, not just "N cooling down".
+    expect(plan.clamps[0]?.reason).toMatch(/cooling down/);
+    expect(plan.clamps[0]?.reason).toMatch(/\d+s/);
   });
 
-  it("plan: the full rotation keeps the chain byte-identical to no availableModels", () => {
+  it("plan: the full rotation keeps the chain byte-identical to no cooling", () => {
     const call = makeCall(
       ["t1", "t2", "t3", "t4", "t5"].map((id) => makeTask(id)),
       9,
     );
     const config = { ...BASE_CONFIG, maxParallel: 20, workerModels: ["model-a", "model-b"] };
-    expect(planFanoutWidth(call, config, config.workerModels.length)).toStrictEqual(
-      planFanoutWidth(call, config),
-    );
+    expect(planFanoutWidth(call, config, [])).toStrictEqual(planFanoutWidth(call, config));
   });
 
   it("runtime: a partial cooldown leaves the one cool-free model with ≤2 live workers", async () => {
@@ -691,8 +734,18 @@ describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
       await tick();
     }
     const result = expectResult(await promise);
+    // The runtime row mirrors the plan row STRICTLY: same count, same remainders
+    // (the store was read at plan time with cool.now === 0).
     expect(result.clamps).toStrictEqual([
-      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+      {
+        field: "cooldown",
+        requested: 4,
+        applied: 2,
+        reason:
+          `per-model cap 2 × 1 of 3 model(s) cool — 2 model(s) cooling down (up to ` +
+          `600s left: model-a window ${formatCooldownRemaining(600_000)}, ` +
+          `model-b timeout ${formatCooldownRemaining(600_000)})`,
+      },
     ]);
     expect(pi.host.requests.every((request) => request.model === "model-c")).toBe(true);
     expect(result.results.every((row) => row.status === "done")).toBe(true);
@@ -714,8 +767,17 @@ describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
     const result = expectResult(await promise);
     expect(pi.host.requests).toHaveLength(0);
     expect(pi.host.cancels).toHaveLength(0);
+    // The fail-fast row carries the same remainders the summary names.
     expect(result.clamps).toStrictEqual([
-      { field: "cooldown", requested: 4, applied: 0, reason: expect.any(String) },
+      {
+        field: "cooldown",
+        requested: 4,
+        applied: 0,
+        reason:
+          `all 2 model(s) cooling down (up to ${formatCooldownRemaining(600_000)} left: ` +
+          `model-a window ${formatCooldownRemaining(600_000)}, ` +
+          `model-b timeout ${formatCooldownRemaining(90_000)}) — the rotation is empty at plan time`,
+      },
     ]);
     expect(result.results.map((row) => row.id)).toStrictEqual(["t1", "t2", "t3"]);
     for (const row of result.results) {
@@ -866,8 +928,18 @@ describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
       await tick();
     }
     const result = expectResult(await promise);
+    // The snapshot row is the START-of-call one: model-a cooled for a minute at
+    // cool.now === 0, so the row names that model and its 60s remainder even
+    // though the model came back mid-call (clamps are not rewritten).
     expect(result.clamps).toStrictEqual([
-      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+      {
+        field: "cooldown",
+        requested: 4,
+        applied: 2,
+        reason:
+          `per-model cap 2 × 1 of 2 model(s) cool — 1 model(s) cooling down (up to ` +
+          `60s left: model-a window ${formatCooldownRemaining(60_000)})`,
+      },
     ]);
     expect(result.results.every((row) => row.status === "done")).toBe(true);
     expect(pi.host.cancels).toHaveLength(0);

@@ -151,13 +151,21 @@ export interface WidthPlan {
 }
 
 /**
- * The width chain (FR-003, minor 1/N1-R3). Pure so tests can pin the row
- * order and the requested/applied bookkeeping without a running pool.
+ * A model off dispatch when the width chain is planned (design D3: the clamp
+ * chain is a start-of-call snapshot). `runFanout` hands over the store's
+ * `activeCooldowns` of the rotation VERBATIM, so the row can name the remainders
+ * and not only their count — spec "Fully cooled rotation is fail-fast": a
+ * partially cooled rotation that squeezed the width MUST report the number of
+ * skipped models AND their time remainders in the chain (blocker 3.1).
+ * Entries outside the rotation are ignored, so `modelCount − skipped` can never
+ * go negative; the entries are already one per model (`activeCooldowns` keeps a
+ * single `until` per model).
  */
 export function planFanoutWidth(
   call: Pick<ValidatedFusionCall, "tasks" | "maxWorkers">,
   config: FanoutConfig,
-  availableModels?: number,
+  /** The cooling models and their remainders; omitted/[] = nothing cools. */
+  cooling: CooldownEntry[] = [],
 ): WidthPlan {
   const requested = call.maxWorkers ?? config.workers;
   const modelCount = config.workerModels.length;
@@ -189,18 +197,31 @@ export function planFanoutWidth(
   }
   // The cooldown factor (design D3), right after perModel: perModel keeps the
   // FULL rotation, so a partially cooled rotation re-clamps against the models
-  // actually available. A row appears only when the factor BINDS; with
-  // availableModels === modelCount the capacity equals perModel's and the chain
-  // stays byte-identical to the pre-feature chain (back-compat pin).
-  const available = availableModels ?? modelCount;
+  // actually available. A row appears only when the factor BINDS; with no
+  // cooling entries the capacity equals perModel's and the chain stays byte-identical to
+  // the pre-feature chain (back-compat pin).
+  // Blocker 3.1: the row is not just a count — it carries the number of SKIPPED
+  // models and their time remainders (design D3's «N model(s) cooling down until
+  // …»), formatted by cooldown.ts' own `formatCooldownRemaining` so the chain and
+  // the fail-fast summary and `/fusion status` speak one time format.
+  const rotation = new Set(config.workerModels);
+  const cooled = cooling.filter((entry) => rotation.has(entry.model));
+  const available = modelCount - cooled.length;
   const coolCapacity = PER_MODEL_CAP * available;
   if (coolCapacity < width) {
+    const remainders = cooled.map(
+      (entry) => `${entry.model} ${entry.reason} ${formatCooldownRemaining(entry.remainingMs)}`,
+    );
+    const maxRemainingMs = cooled.reduce((max, entry) => Math.max(max, entry.remainingMs), 0);
+    // One longest remainder plus the per-model list: the operator sees how long
+    // the squeeze can last AND which models bought it off.
+    const carry = `up to ${formatCooldownRemaining(maxRemainingMs)} left: ${remainders.join(", ")}`;
     applyFactor(
       "cooldown",
       coolCapacity,
       available === 0
-        ? `all ${modelCount} model(s) cooling down — the rotation is empty at plan time`
-        : `per-model cap ${PER_MODEL_CAP} × ${available} of ${modelCount} model(s) cool`,
+        ? `all ${modelCount} model(s) cooling down (${carry}) — the rotation is empty at plan time`
+        : `per-model cap ${PER_MODEL_CAP} × ${available} of ${modelCount} model(s) cool — ${cooled.length} model(s) cooling down (${carry})`,
     );
   }
   if (call.tasks.length < width) {
@@ -388,8 +409,10 @@ export async function runFanout(deps: FanoutDeps): Promise<FanoutResult | Degrad
   const cooldownFallback = config.modelCooldownMs;
   // The width chain is planned against the rotation AS IT IS NOW (design D3:
   // clamp rows are a start-of-call snapshot; dispatch re-reads the store).
+  // The snapshot goes in as the entries themselves, so the cooldown row can
+  // carry the remainders (blocker 3.1), not only their count.
   const coolingAtPlan = store.activeCooldowns(models, clock.now());
-  const { width, clamps } = planFanoutWidth(call, config, models.length - coolingAtPlan.length);
+  const { width, clamps } = planFanoutWidth(call, config, coolingAtPlan);
 
   // A width below 1 can never launch anything — fail the whole call now instead
   // of deadlocking the schedule. Two shapes reach this branch: the empty rotation

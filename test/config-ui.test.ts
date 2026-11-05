@@ -99,6 +99,8 @@ function makeDeps(
     installAgent: () => {},
     roleProfileStatuses: () => [],
     installRoleAgents: () => [],
+    // The menu never reads the cooldown store; the deps shape demands the method.
+    cooldowns: () => [],
     notify: (message, level = "info") => {
       notices.push({ message, level });
     },
@@ -300,6 +302,31 @@ describe("interactiveFusionConfig", () => {
     expect(formatCurrent(host.config())).not.toMatch(/^\s*(mode|режим):/m);
   });
 
+  it("shows the modelCooldownMs row right after the task timeout (fusion-model-cooldown D5)", async () => {
+    const host = makeDeps();
+    const ids = fusionMenuItems(host.config()).map((item) => item.id);
+    const timeoutRow = ids.indexOf("taskTimeoutMs");
+    expect(timeoutRow).toBeGreaterThan(-1);
+    expect(ids[timeoutRow + 1]).toBe("modelCooldownMs");
+    const dialogs = scriptedDialogs([GLOBAL_PICK, DONE]);
+    await interactiveFusionConfig(host.deps, dialogs);
+    expect(dialogs.selects[1]).toContain(labelFor(host.config(), "modelCooldownMs"));
+  });
+
+  it("edits modelCooldownMs in global mode through a full snapshot", async () => {
+    const host = makeDeps({ workers: 3 });
+    const row = labelFor(host.config(), "modelCooldownMs");
+    const dialogs = scriptedDialogs([GLOBAL_PICK, row, DONE], ["45000"]);
+    await interactiveFusionConfig(host.deps, dialogs);
+    expect(host.config().modelCooldownMs).toBe(45_000);
+    const raw = host.globalRaw() ?? {};
+    expect(raw.modelCooldownMs).toBe(45_000);
+    // A global edit writes the whole canonical document, so every field is there.
+    expect(Object.keys(raw).sort()).toEqual(Object.keys(FUSION_CONFIG_DEFAULTS).sort());
+    expect(host.persisted()).toBe(1);
+    expect(host.projectWrites()).toBe(0);
+  });
+
   it("never changes the session's tool activation, even while editing settings", async () => {
     const host = makeDeps();
     const workers = labelFor(host.config(), "workers");
@@ -484,6 +511,21 @@ describe("interactiveFusionConfig: local mode (origins, delta writes, confirm, r
     expect(host.persisted()).toBe(0);
     // The global file is untouched by a local edit.
     expect(host.globalRaw()).toEqual({ maxSteps: 90 });
+  });
+
+  it("modelCooldownMs shows its origin locally and a confirmed override writes one key", async () => {
+    const host = makeDeps({ maxSteps: 90 }, { workers: 8 });
+    const origins = host.origins();
+    const row = labelFor(host.effective(), "modelCooldownMs", origins);
+    expect(row.endsWith(" [default]")).toBe(true);
+    const dialogs = scriptedDialogs([LOCAL_EXISTS, row, DONE], ["90000"], [true]);
+    await interactiveFusionConfig(host.deps, dialogs);
+    expect(dialogs.confirms).toHaveLength(1);
+    expect(dialogs.confirms[0]).toContain("modelCooldownMs");
+    expect(host.projectRaw()).toEqual({ workers: 8, modelCooldownMs: 90_000 });
+    expect(host.projectWrites()).toBe(1);
+    expect(host.persisted()).toBe(0);
+    expect(host.effective().modelCooldownMs).toBe(90_000);
   });
 
   it("editing an inherited field needs a confirm; decline changes nothing", async () => {

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearProjectFusionOverride,
   defaultFusionConfigPath,
+  FUSION_CONFIG_BOUNDS,
   FUSION_CONFIG_DEFAULTS,
   type FusionConfig,
   loadEffectiveConfig,
@@ -21,6 +22,7 @@ import {
   persistProjectFusionDelta,
   projectFusionConfigPath,
 } from "../extensions/pi-fusion/config.ts";
+import { COOLDOWN_CLAMP_MS } from "../extensions/pi-fusion/pool/fanout.ts";
 
 const renameState = vi.hoisted(() => ({ fail: false }));
 
@@ -48,6 +50,8 @@ const CUSTOM: FusionConfig = {
   workers: 5,
   maxParallel: 4,
   taskTimeoutMs: 120_000,
+  // openspec fusion-model-cooldown, design D5: a valid in-bounds cooldown.
+  modelCooldownMs: 90_000,
   workerModels: ["vendor/a", "vendor/b"],
   maxSteps: 25,
   requireApproval: false,
@@ -124,6 +128,7 @@ describe("config: fusion.json load/persist", () => {
         workers: 3,
         maxParallel: 3,
         taskTimeoutMs: 600_000,
+        modelCooldownMs: 300_000,
         workerModels: [],
         maxSteps: 60,
         requireApproval: true,
@@ -186,6 +191,8 @@ describe("config: fusion.json load/persist", () => {
       ["maxParallel", 9],
       ["taskTimeoutMs", 29_999],
       ["taskTimeoutMs", 3_600_001],
+      ["modelCooldownMs", 1_000],
+      ["modelCooldownMs", 4_000_000],
       ["maxSteps", 0],
       ["maxSteps", 10_001],
       ["requireApproval", 1],
@@ -206,6 +213,8 @@ describe("config: fusion.json load/persist", () => {
       ["maxParallel", 8],
       ["taskTimeoutMs", 30_000],
       ["taskTimeoutMs", 3_600_000],
+      ["modelCooldownMs", 30_000],
+      ["modelCooldownMs", 3_600_000],
       ["maxSteps", 1],
       ["maxSteps", 10_000],
     ] as const)("accepts boundary values %s = %p", (key, value) => {
@@ -288,6 +297,18 @@ describe("config: fusion.json load/persist", () => {
       expect(loadFusionConfig(path)).toEqual(CUSTOM);
     });
 
+    it("modelCooldownMs survives the persist round trip (design D5)", () => {
+      const path = join(dir, "fusion.json");
+      persistFusionConfig({ ...FUSION_CONFIG_DEFAULTS, modelCooldownMs: 45_000 }, path);
+      const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      expect(onDisk.modelCooldownMs).toBe(45_000);
+      expect(loadFusionConfig(path).modelCooldownMs).toBe(45_000);
+    });
+
+    it("the pool's cooldown clamp stays equal to the config bounds (no drift)", () => {
+      expect(COOLDOWN_CLAMP_MS).toEqual(FUSION_CONFIG_BOUNDS.modelCooldownMs);
+    });
+
     it("replaces the previous file wholesale and leaves no temporary files", () => {
       const path = join(dir, "fusion.json");
       persistFusionConfig(CUSTOM, path);
@@ -306,6 +327,7 @@ describe("config: fusion.json load/persist", () => {
         "leadBlockedTools",
         "maxParallel",
         "maxSteps",
+        "modelCooldownMs",
         "requireApproval",
         "researcherWeb",
         "taskTimeoutMs",
@@ -421,6 +443,22 @@ describe("config: layered project overrides (.pi/fusion.json)", () => {
       });
       expect(origins.taskTimeoutMs).toBe("local");
       expect(origins.workers).toBe("global");
+    });
+
+    it("modelCooldownMs takes every layer and reports its origin (fusion-model-cooldown D5)", () => {
+      quietWarn();
+      writeGlobal({ modelCooldownMs: 120_000 });
+      expect(loadEffectiveConfig(globalPath, projectDir).origins.modelCooldownMs).toBe("global");
+
+      writeLocal(JSON.stringify({ modelCooldownMs: 60_000 }));
+      const local = loadEffectiveConfig(globalPath, projectDir);
+      expect(local.config.modelCooldownMs).toBe(60_000);
+      expect(local.origins.modelCooldownMs).toBe("local");
+
+      writeLocal(JSON.stringify({ modelCooldownMs: "5m" }));
+      const invalid = loadEffectiveConfig(globalPath, projectDir);
+      expect(invalid.config.modelCooldownMs).toBe(120_000);
+      expect(invalid.origins.modelCooldownMs).toBe("global");
     });
 
     it("a local model list replaces the global one without merging", () => {
@@ -613,6 +651,16 @@ describe("config: layered project overrides (.pi/fusion.json)", () => {
     it("creates the project file with only the delta keys when it is absent", () => {
       persistProjectFusionDelta({ workers: 8 }, projectDir);
       expect(readLocal()).toEqual({ workers: 8 });
+    });
+
+    it("modelCooldownMs written as a project delta reads back with local origin", () => {
+      quietWarn();
+      writeGlobal({ modelCooldownMs: 120_000 });
+      persistProjectFusionDelta({ modelCooldownMs: 90_000 }, projectDir);
+      const { config, origins } = loadEffectiveConfig(globalPath, projectDir);
+      expect(readLocal()).toEqual({ modelCooldownMs: 90_000 });
+      expect(config.modelCooldownMs).toBe(90_000);
+      expect(origins.modelCooldownMs).toBe("local");
     });
 
     it("merges only the delta keys and preserves unknown keys", () => {

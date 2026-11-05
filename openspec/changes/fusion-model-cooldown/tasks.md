@@ -16,39 +16,36 @@
   закрытыми, но найдены 3 дефекта (несводимость сценария ширины,
   LIST_SPECS→NUMBER_SPECS, повтор-не-сокращает); r3 pass — все фиксы
   подтверждены, 2 нита закрыты точечно.)
-- [ ] 1.2 Утверждение владельца пакета спеки → заморозка. Критерий: явное
-  согласие владельца в сессии.
+- [x] 1.2 Утверждение владельца пакета спеки → заморозка. Критерий: явное
+  согласие владельца в сессии. (Владелец 2026-11-05: «Утверждаю».
+  Заморожено.)
 
 ## 2. Реализация (TDD)
 
-- [ ] 2.1 `pool/cooldown.ts`: ядро — фабрика хранилища, Clock-интерфейс,
+- [x] 2.1 `pool/cooldown.ts`: ядро — фабрика хранилища, Clock-интерфейс,
   enterCooldown/activeCooldowns/sweep, парсер parseRetryAfterMs (формы
-  D2, чистый). Тесты `test/cooldown.test.ts`: парсер (все формы, отсутствие
-  времени, большие/малые значения), store (запись, истечение, sweep,
-  изоляция фабрики), остатки для подмножества ротации.
+  D2, чистый). Тесты `test/cooldown.test.ts`.
   Критерий: `npx vitest run test/cooldown.test.ts` зелёный.
-- [ ] 2.2 `pool/fanout.ts` + `seam/client.ts` + `types.ts`: интеграция
+  (Выполнено 2026-11-05: 23 теста, TDD красные первыми; typecheck 0.)
+- [x] 2.2 `pool/fanout.ts` + `seam/client.ts` + `types.ts`: интеграция
   кулдауна (deps cooldowns с прод-синглтоном из index.ts), упразднение
   streak-счётчика, pickModel-пропуск остывающих, возврат по истечении,
   фактор cooldown в planFanoutWidth (literal в ClampRowSchema), fail-fast
-  при пустой activeModels на старте, честный noModelResult; маркер
+  при пустой ротации на старте, честный noModelResult; маркер
   `\b403\b` в WINDOW_MARKERS.
-  Тесты: scenarios из design D8 в СУЩЕСТВУЮЩИХ файлах (новые describe в
-  `test/window.test.ts` — кулдаунные исходы вместо streak-исходов;
-  `test/pool.test.ts` — ширина/клампы; `test/fanout-e2e.test.ts` —
-  кросс-вызовность) + «403 Forbidden» → windowClass в
-  `test/seam-client.test.ts`. Обновить СУЩЕСТВУЮЩИЕ пины window-тестов
-  под новое поведение (streak-пины умирают — упразднены намеренно).
-  Критерий: `npx vitest run test/window.test.ts test/pool.test.ts
-  test/fanout-e2e.test.ts test/seam-client.test.ts` зелёный.
-- [ ] 2.3 `config.ts` + `config-bridge.ts` + `commands.ts` +
+  (Выполнено 2026-11-05: 23 красных пина первыми; streak-механика удалена
+  целиком; отклонение — до 2.3 поле опционально с локальными константами,
+  снято в 2.3; опциональный cooldownStore в FusionExtensionOptions для
+  E2E-изоляции синглтона.)
+- [x] 2.3 `config.ts` + `config-bridge.ts` + `commands.ts` +
   `config-ui.ts` + `index.ts` + `README.md`: поле modelCooldownMs во все
-  слои (defaults/bounds/readFields/snapshot/persist/bridge), строка
-  статуса с остывающими моделями (deps cooldowns), строка меню в двух
-  локалях, проводка синглтона в index.ts, раздел README.
-  Критерий: `npx vitest run test/config.test.ts test/command.test.ts
-  test/config-ui.test.ts test/config-bridge.test.ts test/tool-wiring.test.ts`
-  зелёный.
+  слои, строка статуса с остывающими моделями (deps cooldowns), строка
+  меню в двух локалях, проводка синглтона в index.ts, раздел README.
+  (Выполнено 2026-11-05: 26 красных пинов первыми; поле стало
+  обязательным, фолбэки 2.2 удалены; клампинг — зеркало COOLDOWN_CLAMP_MS,
+  закреплено пином равенства с FUSION_CONFIG_BOUNDS.modelCooldownMs
+  (без цикла импортов); README корневой — таблица + раздел Model
+  cooldowns.)
 
 ## 3. Приёмка
 

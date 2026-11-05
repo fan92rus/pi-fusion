@@ -3,8 +3,9 @@
  *
  * Gates covered: the 11-status table (one row per SubagentDelegationStatus
  * literal, compile-time exhaustive), grace → :cancel, dispose-resolve pending
- * as cancelled, ignore-after-dispose, window/overload markers (Q-002),
- * terminal-only usage with "0 = no data", per-attempt turnsObserved.
+ * as cancelled, ignore-after-dispose, host-error classes (Q-002 plus the new
+ * `\b403\b` window marker of fusion-model-cooldown D4), terminal-only usage with
+ * "0 = no data", per-attempt turnsObserved.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerReportSchema } from "../extensions/pi-fusion/report/schema.ts";
@@ -381,6 +382,28 @@ describe("hostError classification (Q-002 three classes)", () => {
 
   it("other failures → code failed, windowClass=false", async () => {
     expect(await runFailed("SyntaxError in worker")).toMatchObject({
+      kind: "hostError",
+      code: "failed",
+      windowClass: false,
+    });
+  });
+
+  // fusion-model-cooldown D4: the bare 403 becomes the window class, so a model
+  // that hits a quota wall quoted as a status code cools down. The status CODE
+  // stays `failed` — only the class changes.
+  it.each(["403 Forbidden", "HTTP 403", "Request rejected: HTTP/1.1 403 Forbidden"])(
+    "window class via the new 403 marker: %s → windowClass=true, code failed",
+    async (error) => {
+      expect(await runFailed(error)).toMatchObject({
+        kind: "hostError",
+        code: "failed",
+        windowClass: true,
+      });
+    },
+  );
+
+  it("the 403 marker is a whole number, not a substring of another code", async () => {
+    expect(await runFailed("upstream 4030, retry manually")).toMatchObject({
       kind: "hostError",
       code: "failed",
       windowClass: false,

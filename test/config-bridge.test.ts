@@ -33,6 +33,7 @@ describe("config-bridge readFusionConfig", () => {
       workers: 3,
       maxParallel: 3,
       taskTimeoutMs: 600_000,
+      modelCooldownMs: 300_000,
       workerModels: [],
       maxSteps: 60,
       researcherWeb: "none",
@@ -47,6 +48,7 @@ describe("config-bridge readFusionConfig", () => {
         workers: 5,
         maxParallel: 4,
         taskTimeoutMs: 120_000,
+        modelCooldownMs: 45_000,
         workerModels: ["model-a", "model-b"],
         maxSteps: 25,
         researcherWeb: "both",
@@ -56,6 +58,7 @@ describe("config-bridge readFusionConfig", () => {
       workers: 5,
       maxParallel: 4,
       taskTimeoutMs: 120_000,
+      modelCooldownMs: 45_000,
       workerModels: ["model-a", "model-b"],
       maxSteps: 25,
       researcherWeb: "both",
@@ -118,17 +121,32 @@ describe("config-bridge readFusionConfig", () => {
       expect(cwd).toHaveBeenCalled();
     });
 
-    it("keeps the bridge snapshot to its six fields (no origins, no lead-gate lists)", () => {
+    it("keeps the bridge snapshot to its seven fields (no origins, no lead-gate lists)", () => {
       const config = readFusionConfig(join(dir, "missing.json"), projectDir);
       expect(Object.keys(config).sort()).toEqual(
         [
           "maxParallel",
           "maxSteps",
+          "modelCooldownMs",
           "researcherWeb",
           "taskTimeoutMs",
           "workerModels",
           "workers",
         ].sort(),
+      );
+    });
+
+    it("modelCooldownMs passes through the bridge, a project override included (design D5)", () => {
+      const globalPath = write(JSON.stringify({ modelCooldownMs: 120_000 }));
+      expect(readFusionConfig(globalPath, projectDir).modelCooldownMs).toBe(120_000);
+      writeProject(JSON.stringify({ modelCooldownMs: 60_000 }));
+      expect(readFusionConfig(globalPath, projectDir).modelCooldownMs).toBe(60_000);
+    });
+
+    it("modelCooldownMs keeps its default when no layer sets it", () => {
+      const globalPath = write(JSON.stringify({ workers: 5 }));
+      expect(readFusionConfig(globalPath, projectDir).modelCooldownMs).toBe(
+        FUSION_CONFIG_DEFAULTS.modelCooldownMs,
       );
     });
   });

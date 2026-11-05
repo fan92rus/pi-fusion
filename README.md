@@ -28,6 +28,7 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
   "workers": 3,
   "maxParallel": 3,
   "taskTimeoutMs": 600000,
+  "modelCooldownMs": 300000,
   "workerModels": ["vendor/cheap-model", "vendor/other-model"],
   "maxSteps": 60,
   "requireApproval": true,
@@ -40,6 +41,7 @@ the four gates (test / typecheck / lint / build) on ubuntu + windows, node 22.
 |---|---|
 | `workers` / `maxParallel` | Requested width and the hard concurrency ceiling. |
 | `taskTimeoutMs` | Per-task wall-time budget (30 000 … 3 600 000). |
+| `modelCooldownMs` | Fallback model-cooldown length: default 300 000 (5 min), bounds 30 000 … 3 600 000 ms. Used when an error carries no retry-after time and for every timeout — see the cooldown section below. |
 | `workerModels` | The rotation; **empty → every call is refused up front.** |
 | `maxSteps` | Worker step budget. |
 | `requireApproval` | Reserved for phase-2 approvals (not yet consumed). |
@@ -126,9 +128,34 @@ report (same model, slot held). Usage is summed from terminal responses only;
 absent numbers stay unknown (`usagePartial`), never faked as zero.
 
 Sizing: `width = min(requested, tasks, maxParallel, 2 × |workerModels|)`;
-per-model cap 2, round-robin rotation; a model with 5 consecutive
-window-class errors is excluded from NEW launches only (no cancels, no
-restarts).
+per-model cap 2, round-robin rotation.
+
+**Model cooldowns** (openspec `fusion-model-cooldown`):
+- First offence cools: the FIRST window-class host error on a model (quota,
+  rate limit exceeded, limit reached, plan/billing limit, or a bare `403`) — or
+  its FIRST timeout — puts the model into a cooldown immediately (the old 5-error
+  streak counter is gone). Overload (`429`), `interrupted`, `cancelled` and other
+  host errors are not the model’s fault and never cool it.
+- Duration comes from the error: a retry-after-like time in the text (`try again
+  in 90 seconds`, `retry after 1m30s`, `wait 15 min`) is summed and clamped to
+  30 s … 1 h. With no time in the text — and always for a timeout, which carries
+  none — the effective `modelCooldownMs` is the length (default 5 min).
+- A cooled model gets no NEW tasks for exactly that long; its running children
+  are never cancelled and finish naturally. A repeat error never shortens the
+  remaining cooldown (max rule); an expired cooldown returns the model to the
+  rotation even mid-call.
+- The cooldown state lives on the pi process: it survives every later `fusion_delegate`
+  call and `/fusion on|off` toggles in that process (a rate limit belongs to the
+  account, not to a project), and restarting pi resets it — cooldowns are never
+  persisted.
+- Fully cooled rotation = fail-fast: every task is `failed` with `no-available-model`
+  and a summary naming each model, its reason and its remainder. A partial cooldown
+  adds a `cooldown` clamp row only when it binds (2 × available models below the
+  width), so a silent cooldown costs nothing.
+- Visibility: `/fusion status` prints one indented row per cooling model of the
+  effective rotation — `cooldown: <model> — <window quota|timeout>, still <Ns>`
+  (remainder rounded up to whole seconds; Russian wording on a ru-* locale) — and
+  the `modelCooldownMs: <value> ms [origin]` config line.
 
 ## Workers
 

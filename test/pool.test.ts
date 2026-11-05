@@ -13,6 +13,12 @@ import type {
   ValidatedTask,
 } from "../extensions/pi-fusion/contract/validate.ts";
 import {
+  type CooldownStore,
+  createCooldownStore,
+  formatCooldownRemaining,
+} from "../extensions/pi-fusion/pool/cooldown.ts";
+import {
+  type CooldownDeps,
   type FanoutConfig,
   type FanoutDeps,
   planFanoutWidth,
@@ -62,7 +68,25 @@ const BASE_CONFIG: FanoutConfig = {
   taskTimeoutMs: 60_000,
   workerModels: ["model-a", "model-b"],
   maxSteps: 100,
+  modelCooldownMs: 300_000,
 };
+
+/** An injected cooldown store plus the virtual clock driving it (design D1). */
+interface Cool {
+  store: CooldownStore;
+  now: number;
+}
+
+function makeCool(): Cool {
+  return { store: createCooldownStore(), now: 0 };
+}
+
+const coolDeps: (cool: Cool) => Partial<FanoutDeps> = (cool) => ({
+  cooldowns: {
+    store: cool.store,
+    clock: { now: () => cool.now },
+  } satisfies CooldownDeps,
+});
 
 interface Pool {
   pi: FakePi;
@@ -582,5 +606,270 @@ describe("empty rotation (B-FINAL, FR-003)", () => {
     }
     expect(result.usagePartial).toBe(true);
     expect(result.usage).toStrictEqual({});
+  });
+});
+
+describe("cooldown width (fusion-model-cooldown D3, D7, D8)", () => {
+  it("plan: 3 models, 2 cooling, workers 4, maxParallel 8, 4 tasks → cooldown row 4 → 2", () => {
+    const plan = planFanoutWidth(
+      makeCall(["t1", "t2", "t3", "t4"].map((id) => makeTask(id))),
+      { ...BASE_CONFIG, maxParallel: 8, workerModels: ["model-a", "model-b", "model-c"] },
+      1,
+    );
+    expect(plan.width).toBe(2);
+    expect(plan.clamps).toStrictEqual([
+      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+    ]);
+  });
+
+  it("plan: a non-binding cooldown adds no row (3 models, 1 cooling, workers 3)", () => {
+    const plan = planFanoutWidth(
+      makeCall(["t1", "t2", "t3"].map((id) => makeTask(id))),
+      {
+        ...BASE_CONFIG,
+        workers: 3,
+        maxParallel: 8,
+        workerModels: ["model-a", "model-b", "model-c"],
+      },
+      2,
+    );
+    expect(plan.width).toBe(3);
+    expect(plan.clamps).toStrictEqual([]);
+  });
+
+  it("plan: every model cooling → width 0 and the cooldown row (B-FINAL shape)", () => {
+    const plan = planFanoutWidth(
+      makeCall(
+        ["t1", "t2", "t3"].map((id) => makeTask(id)),
+        4,
+      ),
+      { ...BASE_CONFIG, maxParallel: 8, workerModels: ["model-a", "model-b", "model-c"] },
+      0,
+    );
+    expect(plan.width).toBe(0);
+    expect(plan.clamps).toStrictEqual([
+      { field: "cooldown", requested: 4, applied: 0, reason: expect.any(String) },
+    ]);
+  });
+
+  it("plan: the full rotation keeps the chain byte-identical to no availableModels", () => {
+    const call = makeCall(
+      ["t1", "t2", "t3", "t4", "t5"].map((id) => makeTask(id)),
+      9,
+    );
+    const config = { ...BASE_CONFIG, maxParallel: 20, workerModels: ["model-a", "model-b"] };
+    expect(planFanoutWidth(call, config, config.workerModels.length)).toStrictEqual(
+      planFanoutWidth(call, config),
+    );
+  });
+
+  it("runtime: a partial cooldown leaves the one cool-free model with ≤2 live workers", async () => {
+    const cool = makeCool();
+    cool.store.enterCooldown("model-a", "window", 600_000, cool.now);
+    cool.store.enterCooldown("model-b", "timeout", 600_000, cool.now);
+    const { pi, promise } = startPool(
+      makeCall(["t1", "t2", "t3", "t4"].map((id) => makeTask(id))),
+      {
+        ...BASE_CONFIG,
+        workers: 4,
+        maxParallel: 8,
+        workerModels: ["model-a", "model-b", "model-c"],
+      },
+      coolDeps(cool),
+    );
+    for (;;) {
+      const pending = pi.host.pendingRequestIds();
+      if (pending.length === 0) {
+        break;
+      }
+      expect(pending.length).toBeLessThanOrEqual(2);
+      const first = pending[0];
+      if (first === undefined) {
+        break;
+      }
+      pi.host.respond(first);
+      await tick();
+    }
+    const result = expectResult(await promise);
+    expect(result.clamps).toStrictEqual([
+      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+    ]);
+    expect(pi.host.requests.every((request) => request.model === "model-c")).toBe(true);
+    expect(result.results.every((row) => row.status === "done")).toBe(true);
+    expect(pi.host.cancels).toHaveLength(0);
+  });
+
+  it("runtime: every model cooling at the start fails the call up front with zero :request", async () => {
+    const cool = makeCool();
+    cool.store.enterCooldown("model-a", "window", 600_000, cool.now);
+    cool.store.enterCooldown("model-b", "timeout", 90_000, cool.now);
+    const { pi, promise } = startPool(
+      makeCall(
+        ["t1", "t2", "t3"].map((id) => makeTask(id)),
+        4,
+      ),
+      { ...BASE_CONFIG, maxParallel: 8 },
+      coolDeps(cool),
+    );
+    const result = expectResult(await promise);
+    expect(pi.host.requests).toHaveLength(0);
+    expect(pi.host.cancels).toHaveLength(0);
+    expect(result.clamps).toStrictEqual([
+      { field: "cooldown", requested: 4, applied: 0, reason: expect.any(String) },
+    ]);
+    expect(result.results.map((row) => row.id)).toStrictEqual(["t1", "t2", "t3"]);
+    for (const row of result.results) {
+      expect(row).toMatchObject({
+        status: "failed",
+        error: "no-available-model",
+        attempts: 0,
+      });
+      // The honest summary names every cooling model, its reason and remainder.
+      expect(row.summary).toContain(`model-a window ${formatCooldownRemaining(600_000)}`);
+      expect(row.summary).toContain(`model-b timeout ${formatCooldownRemaining(90_000)}`);
+    }
+    expect(result.usage).toStrictEqual({});
+    expect(result.usagePartial).toBe(true);
+  });
+
+  it("runtime: a retry-after read from the error sets the duration (90 seconds → 90 000)", async () => {
+    const cool = makeCool();
+    const { pi, promise } = startPool(
+      makeCall([makeTask("t1")]),
+      {
+        ...BASE_CONFIG,
+        workers: 1,
+        maxParallel: 1,
+        workerModels: ["model-a"],
+        modelCooldownMs: 120_000,
+      },
+      coolDeps(cool),
+    );
+    respondByNode(pi, "t1#a1", {
+      status: "failed",
+      error: "HTTP 429: rate limit exceeded — try again in 90 seconds",
+    });
+    const result = expectResult(await promise);
+    expect(result.results[0]).toMatchObject({
+      status: "failed",
+      error: "host:failed",
+      attempts: 1,
+    });
+    expect(cool.store.activeCooldowns(["model-a"], cool.now)).toStrictEqual([
+      { model: "model-a", reason: "window", remainingMs: 90_000 },
+    ]);
+  });
+
+  it("runtime: a bare 403 with no time cools for modelCooldownMs (marker + fallback)", async () => {
+    const cool = makeCool();
+    const { pi, promise } = startPool(
+      makeCall([makeTask("t1")]),
+      {
+        ...BASE_CONFIG,
+        workers: 1,
+        maxParallel: 1,
+        workerModels: ["model-a"],
+        modelCooldownMs: 120_000,
+      },
+      coolDeps(cool),
+    );
+    respondByNode(pi, "t1#a1", { status: "failed", error: "403 Forbidden" });
+    const result = expectResult(await promise);
+    expect(result.results[0]).toMatchObject({
+      status: "failed",
+      error: "host:failed",
+      attempts: 1,
+    });
+    expect(cool.store.activeCooldowns(["model-a"], cool.now)).toStrictEqual([
+      { model: "model-a", reason: "window", remainingMs: 120_000 },
+    ]);
+  });
+
+  it("runtime: a timeout cools for modelCooldownMs with reason timeout", async () => {
+    const cool = makeCool();
+    const { pi, promise } = startPool(
+      makeCall([makeTask("t1")]),
+      {
+        ...BASE_CONFIG,
+        workers: 1,
+        maxParallel: 1,
+        workerModels: ["model-a"],
+        modelCooldownMs: 120_000,
+      },
+      coolDeps(cool),
+    );
+    respondByNode(pi, "t1#a1", { status: "timed_out" });
+    const result = expectResult(await promise);
+    expect(result.results[0]).toMatchObject({ status: "failed", error: "timeout", attempts: 1 });
+    expect(cool.store.activeCooldowns(["model-a"], cool.now)).toStrictEqual([
+      { model: "model-a", reason: "timeout", remainingMs: 120_000 },
+    ]);
+  });
+
+  it("runtime: a parsed retry-after clamps into the config bounds", async () => {
+    for (const [error, clamped] of [
+      ["quota exceeded, retry after 2 hours", 3_600_000],
+      ["rate limit exceeded, retry in 1s", 30_000],
+    ] as const) {
+      const cool = makeCool();
+      const { pi, promise } = startPool(
+        makeCall([makeTask("t1")]),
+        {
+          ...BASE_CONFIG,
+          workers: 1,
+          maxParallel: 1,
+          workerModels: ["model-a"],
+          modelCooldownMs: 120_000,
+        },
+        coolDeps(cool),
+      );
+      respondByNode(pi, "t1#a1", { status: "failed", error });
+      const result = expectResult(await promise);
+      expect(result.results[0]).toMatchObject({
+        status: "failed",
+        error: "host:failed",
+        attempts: 1,
+      });
+      expect(cool.store.activeCooldowns(["model-a"], cool.now)).toStrictEqual([
+        { model: "model-a", reason: "window", remainingMs: clamped },
+      ]);
+    }
+  });
+
+  it("runtime: an expired cooldown returns the model to dispatch mid-call", async () => {
+    const cool = makeCool();
+    cool.store.enterCooldown("model-a", "window", 60_000, cool.now);
+    const { pi, promise } = startPool(
+      makeCall(["t1", "t2", "t3", "t4"].map((id) => makeTask(id))),
+      { ...BASE_CONFIG, maxParallel: 8, workerModels: ["model-a", "model-b"] },
+      coolDeps(cool),
+    );
+    // model-a is cooling, so the first wave is model-b only (clamped width 2).
+    expect(pi.host.requests.map((request) => request.nodeId)).toStrictEqual(["t1#a1", "t2#a1"]);
+    expect(pi.host.requests.every((request) => request.model === "model-b")).toBe(true);
+
+    respondByNode(pi, "t1#a1");
+    await tick();
+    // t3 goes to the still-saturated model-b, model-a is still cooling.
+    const t3 = pi.host.requests.find((request) => request.nodeId === "t3#a1");
+    expect(t3?.model).toBe("model-b");
+
+    // Past the expiry model-a is back in the rotation and takes t4.
+    cool.now = 61_000;
+    respondByNode(pi, "t2#a1");
+    await tick();
+    const t4 = pi.host.requests.find((request) => request.nodeId === "t4#a1");
+    expect(t4?.model).toBe("model-a");
+
+    for (const id of ["t3#a1", "t4#a1"]) {
+      respondByNode(pi, id);
+      await tick();
+    }
+    const result = expectResult(await promise);
+    expect(result.clamps).toStrictEqual([
+      { field: "cooldown", requested: 4, applied: 2, reason: expect.any(String) },
+    ]);
+    expect(result.results.every((row) => row.status === "done")).toBe(true);
+    expect(pi.host.cancels).toHaveLength(0);
   });
 });

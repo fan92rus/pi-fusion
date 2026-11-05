@@ -97,8 +97,14 @@ export function clipRejectedJson(value: unknown): string {
   return `${cut}\n[обрезано: исходный ответ — ${json.length.toLocaleString("en-US")} символов]`;
 }
 
-/** Window (quota) markers, Q-002 class 1 — case-insensitive substrings. */
-const WINDOW_MARKERS = /quota|rate limit exceeded|limit reached|(?:plan|billing) limit/i;
+/**
+ * Window (quota) markers, Q-002 class 1 — case-insensitive substrings. The
+ * `\b403\b` alternative is the fusion-model-cooldown D4 addition: a quota wall
+ * quoted as a bare status code («403 Forbidden») is a window error too, so the
+ * model cools down. The status CODE stays `failed` — only the class changes, and
+ * a whole-word match keeps other codes (4030, HTTP 1403) out of the class.
+ */
+const WINDOW_MARKERS = /quota|rate limit exceeded|limit reached|(?:plan|billing) limit|\b403\b/i;
 /** Overload markers, Q-002 class 2 — transient, never counted against a model. */
 const OVERLOAD_MARKERS = /overloaded|server busy|too many concurrent|try again later|\b529\b/i;
 

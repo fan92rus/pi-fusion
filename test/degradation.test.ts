@@ -61,6 +61,8 @@ const CONFIG: FanoutConfig = {
   workers: 4,
   maxParallel: 8,
   taskTimeoutMs: 60_000,
+  // FanoutConfig.modelCooldownMs is required since task 2.3 (config field).
+  modelCooldownMs: 300_000,
   workerModels: ["model-a", "model-b"],
   maxSteps: 100,
 };

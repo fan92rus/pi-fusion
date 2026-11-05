@@ -21,6 +21,11 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 // command persists whole snapshots, so dropping the approval/tool fields
 // would silently reset them (bd pi-fusion-chq review fix).
 import { type FieldOrigins, FUSION_CONFIG_BOUNDS, type FusionConfig } from "./config.ts";
+import {
+  type CooldownEntry,
+  type CooldownReason,
+  formatCooldownRemaining,
+} from "./pool/cooldown.ts";
 import { getSessionActivation, type SessionActivation } from "./session-state.ts";
 import type { InstallWorkerAgentResult, RoleProfileStatus } from "./worker-install.ts";
 
@@ -77,6 +82,31 @@ export const FUSION_SUBCOMMANDS: readonly FusionSubcommand[] = [
 // Accepted but not offered as completions: `help` already covers them.
 const HELP_ALIASES: ReadonlySet<string> = new Set(["--help", "-h"]);
 
+// ─── i18n ────────────────────────────────────────────────────────────────────
+
+/**
+ * Russian wording on a ru-* machine, English otherwise — the same auto-detection
+ * config-ui.ts uses, so the operator-facing status lines read in one language.
+ */
+function detectRu(): boolean {
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale || "";
+  return locale.toLowerCase().startsWith("ru");
+}
+
+const RU = detectRu();
+
+/**
+ * The reason words of a `/fusion status` cooldown row (design D6, spec "Visibility
+ * of cooldowns to the operator"). Exported so the command tests can pin a row
+ * without hard-coding the machine locale — the `MENU_ACTIONS` pattern in config-ui.ts.
+ */
+export const COOLDOWN_REASON_LABELS: Record<CooldownReason, string> = {
+  window: RU ? "окно квоты" : "window quota",
+  timeout: RU ? "таймаут" : "timeout",
+};
+/** The "remaining" connector: `ещё 43s` (ru) / `still 43s` (en). */
+const COOLDOWN_REMAINING_WORD = RU ? "ещё" : "still";
+
 const NAME_GUTTER = 2;
 
 /**
@@ -128,6 +158,14 @@ export interface FusionCommandDeps {
   getActivation(): SessionActivation;
   /** Session-only activation: set enabled for this session (Map + appendEntry). */
   setActivation(value: boolean): void;
+  /**
+   * The cooling models of the effective rotation and their remainders (design D6,
+   * spec "Visibility of cooldowns to the operator"): entries
+   * `{ model, reason: "window" | "timeout", remainingMs }`. `index.ts` reads the
+   * process singleton store with the wall clock; a caller with no cooldown state
+   * returns an empty list, and `/fusion status` then prints no cooldown rows.
+   */
+  cooldowns(): CooldownEntry[];
   /** Thin wrapper over pi.appendEntry for session history writes. */
   appendEntry(type: string, data: unknown): void;
   /** Footer status slot writer (guarded no-op without UI channel). */
@@ -299,6 +337,18 @@ function showStatus(deps: FusionCommandDeps): void {
     models.length > 0
       ? models.join(", ")
       : "(none — every fan-out is refused until models are set)";
+  // D6: one indented row per cooling model of the EFFECTIVE rotation, right under
+  // the models line. A store entry for a model the rotation no longer lists is
+  // not a cooldown the operator can act on, so the rotation filters it here too
+  // (index.ts already reads the store against the same rotation).
+  const cooldownLines = deps
+    .cooldowns()
+    .filter((row) => models.includes(row.model))
+    .map(
+      (row) =>
+        `  cooldown: ${row.model} — ${COOLDOWN_REASON_LABELS[row.reason]}, ` +
+        `${COOLDOWN_REMAINING_WORD} ${formatCooldownRemaining(row.remainingMs)}`,
+    );
   const list = (items: readonly string[]): string =>
     items.length > 0 ? items.join(", ") : "(none)";
   const profiles = deps
@@ -316,7 +366,9 @@ function showStatus(deps: FusionCommandDeps): void {
       `workers: ${config.workers}${tag("workers")}`,
       `maxParallel: ${config.maxParallel}${tag("maxParallel")}`,
       `models: ${modelList}${tag("workerModels")}`,
+      ...cooldownLines,
       `timeout: ${config.taskTimeoutMs}${tag("taskTimeoutMs")}`,
+      `modelCooldownMs: ${config.modelCooldownMs} ms${tag("modelCooldownMs")}`,
       `maxSteps: ${config.maxSteps}${tag("maxSteps")}`,
     ].join("\n"),
   );

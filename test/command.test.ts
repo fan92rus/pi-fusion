@@ -12,6 +12,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  COOLDOWN_REASON_LABELS,
   FUSION_SUBCOMMANDS,
   type FusionCommandDeps,
   getFusionArgumentCompletions,
@@ -50,6 +51,9 @@ function makeDeps(
   const calls: string[] = [];
   const statusCalls: Array<[string, any]> = [];
   const branch: any[] = [];
+  // The cooling models `/fusion status` must show (fusion-model-cooldown D6):
+  // the same shape the production wiring reads off the process singleton store.
+  const cooling: Array<{ model: string; reason: "window" | "timeout"; remainingMs: number }> = [];
   const sm = {
     getSessionId: () => sessionId,
     getBranch: () => branch,
@@ -119,6 +123,7 @@ function makeDeps(
       calls.push("installRoleAgents");
       return [];
     },
+    cooldowns: () => cooling.map((row) => ({ ...row })),
     notify: (message: string, level = "info") => {
       notices.push({ message, level });
     },
@@ -139,6 +144,9 @@ function makeDeps(
   } as any;
   return {
     deps,
+    cool: (model: string, reason: "window" | "timeout", remainingMs: number) => {
+      cooling.push({ model, reason, remainingMs });
+    },
     config: () => current,
     project: () => projectFile,
     active: () => active,
@@ -441,6 +449,49 @@ describe("runFusionCommand: status", () => {
     expect(status).toContain("(none");
     expect(status).toContain("agent fusion-worker: absent");
   });
+
+  it("shows the effective modelCooldownMs with its source suffix (fusion-model-cooldown D5)", async () => {
+    const host = makeDeps({ workerModels: ["m/a"] });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).toContain(
+      `modelCooldownMs: ${FUSION_CONFIG_DEFAULTS.modelCooldownMs} ms [default]`,
+    );
+  });
+
+  it("shows a local modelCooldownMs override, not the default", async () => {
+    const host = makeDeps({}, "s1", { modelCooldownMs: 60_000 });
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).toContain("modelCooldownMs: 60000 ms [local]");
+  });
+
+  it("prints one cooldown line per cooling model: reason and remainder in whole seconds (D6)", async () => {
+    const host = makeDeps({ workerModels: ["m/a", "m/b"] });
+    host.cool("m/a", "window", 42_500);
+    host.cool("m/b", "timeout", 1_000);
+    await runFusionCommand("status", host.deps);
+    const lines = (host.notices[0]?.message ?? "").split("\n");
+    const coolRows = lines.filter((row) => row.startsWith("  cooldown: "));
+    expect(coolRows).toHaveLength(2);
+    // The rotation order, right under the models line; the remainder is rounded
+    // up to whole seconds (42 500 ms -> 43s); the reason word follows the locale,
+    // so the test takes it from the module's own label table (as the menu tests do).
+    expect(coolRows[0]?.startsWith("  cooldown: m/a — ")).toBe(true);
+    expect(coolRows[0]).toContain(COOLDOWN_REASON_LABELS.window);
+    expect(coolRows[0]?.endsWith("43s")).toBe(true);
+    expect(coolRows[1]?.startsWith("  cooldown: m/b — ")).toBe(true);
+    expect(coolRows[1]).toContain(COOLDOWN_REASON_LABELS.timeout);
+    expect(coolRows[1]?.endsWith("1s")).toBe(true);
+  });
+
+  it("prints no cooldown lines when no model of the rotation is cooling", async () => {
+    const host = makeDeps({ workerModels: ["m/a", "m/b"] });
+    host.cool("other/model", "window", 42_500);
+    await runFusionCommand("status", host.deps);
+    const status = host.notices[0]?.message ?? "";
+    expect(status).not.toContain("cooldown:");
+  });
 });
 
 describe("runFusionCommand: status shows the source of each field (design D8)", () => {
@@ -476,7 +527,7 @@ describe("runFusionCommand: status shows the source of each field (design D8)", 
     expect(status).toContain("maxSteps: 25 [global]");
   });
 
-  it("gives each of the nine config fields its own line with a source suffix", async () => {
+  it("gives each of the ten config fields its own line with a source suffix", async () => {
     const host = makeDeps({}, "s1", {
       maxSteps: 12,
       requireApproval: false,
@@ -490,6 +541,7 @@ describe("runFusionCommand: status shows the source of each field (design D8)", 
       "timeout",
       "maxSteps",
       "models",
+      "modelCooldownMs",
       "requireApproval",
       "blockedTools",
       "leadBlockedTools",

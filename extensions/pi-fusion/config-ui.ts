@@ -137,8 +137,21 @@ export function layerOptionLabels(projectExists: boolean): Record<Layer, string>
 
 // ─── Field specs ─────────────────────────────────────────────────────────────
 
-const NUMBER_KEYS = ["workers", "maxParallel", "taskTimeoutMs", "maxSteps"] as const;
+const NUMBER_KEYS = [
+  "workers",
+  "maxParallel",
+  "taskTimeoutMs",
+  "modelCooldownMs",
+  "maxSteps",
+] as const;
 type NumberKey = (typeof NUMBER_KEYS)[number];
+
+/** The number fields measured in milliseconds: their row and their notice carry the human-time suffix. */
+const MS_NUMBER_KEYS = ["taskTimeoutMs", "modelCooldownMs"] as const;
+
+function isMsNumberKey(key: NumberKey): boolean {
+  return (MS_NUMBER_KEYS as readonly string[]).includes(key);
+}
 
 const LIST_KEYS = ["workerModels", "blockedTools", "leadBlockedTools"] as const;
 type ListKey = (typeof LIST_KEYS)[number];
@@ -174,6 +187,13 @@ const NUMBER_SPECS: Record<NumberKey, NumberSpec> = {
     description: RU
       ? "Бюджет времени на одну задачу воркера; воркер, превысивший его, отменяется."
       : "Wall-time budget per worker task; a worker exceeding it is cancelled.",
+  },
+  modelCooldownMs: {
+    key: "modelCooldownMs",
+    label: RU ? "🧗 Куладунов модели (мс)" : "🧗 Model cooldown (ms)",
+    description: RU
+      ? "Фолбэк куладунов длительность для модель ротации: первый 403-окно (квоты) или первый тамаут куладунов модель для this long (30 000…3 600 000 ms); распарсемное retry-after время из ошибки вместо it, с клампинг to the same bounds."
+      : "Fallback cooldown length for the rotation: the first 403-window (quota) error or the first timeout takes the model off dispatch for this long; a retry-after time read from the error text wins and clamps to the same range.",
   },
   maxSteps: {
     key: "maxSteps",
@@ -276,7 +296,7 @@ export interface MenuItem {
 export function fusionMenuItems(config: FusionConfig, origins?: FieldOrigins): MenuItem[] {
   const numberLabel = (spec: NumberSpec): string => {
     const value = config[spec.key];
-    const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(value)})` : "";
+    const suffix = isMsNumberKey(spec.key) ? ` ms (${humanMs(value)})` : "";
     return `${spec.label} — ${value}${suffix}`;
   };
   const listLabel = (spec: ListSpec): string =>
@@ -286,6 +306,7 @@ export function fusionMenuItems(config: FusionConfig, origins?: FieldOrigins): M
     { id: "workers", label: numberLabel(NUMBER_SPECS.workers) },
     { id: "maxParallel", label: numberLabel(NUMBER_SPECS.maxParallel) },
     { id: "taskTimeoutMs", label: numberLabel(NUMBER_SPECS.taskTimeoutMs) },
+    { id: "modelCooldownMs", label: numberLabel(NUMBER_SPECS.modelCooldownMs) },
     { id: "maxSteps", label: numberLabel(NUMBER_SPECS.maxSteps) },
     {
       id: "researcherWeb",
@@ -371,7 +392,7 @@ async function editNumber(scope: EditScope, spec: NumberSpec): Promise<void> {
   }
   const delta: Partial<FusionConfig> = { [spec.key]: parsed };
   write(delta);
-  const suffix = spec.key === "taskTimeoutMs" ? ` ms (${humanMs(parsed)})` : "";
+  const suffix = isMsNumberKey(spec.key) ? ` ms (${humanMs(parsed)})` : "";
   deps.notify(`${spec.label} → ${parsed}${suffix}`, "info");
 }
 

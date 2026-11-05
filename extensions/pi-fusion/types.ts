@@ -279,7 +279,11 @@ export const ProgressSnapshotSchema = Type.Object(
 );
 export type ProgressSnapshot = Static<typeof ProgressSnapshotSchema>;
 
-/** One clamp factor of the width chain; `noModels` = empty rotation (B-FINAL). */
+/**
+ * One clamp factor of the width chain: `noModels` = empty rotation (B-FINAL),
+ * `cooldown` = models off dispatch because they are cooling (fusion-model-cooldown
+ * D7 — additive, the existing literals keep their meaning).
+ */
 export const ClampRowSchema = Type.Object(
   {
     field: Type.Union([
@@ -287,6 +291,7 @@ export const ClampRowSchema = Type.Object(
       Type.Literal("tasks"),
       Type.Literal("perModel"),
       Type.Literal("noModels"),
+      Type.Literal("cooldown"),
     ]),
     requested: Type.Integer(),
     applied: Type.Integer(),

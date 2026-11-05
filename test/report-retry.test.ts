@@ -629,6 +629,7 @@ describe("fanout integration (the production caller of runReportRetry)", () => {
         workers: 1,
         maxParallel: 1,
         taskTimeoutMs: 60_000,
+        modelCooldownMs: 300_000,
         workerModels: ["model-a"],
         maxSteps: 100,
       },

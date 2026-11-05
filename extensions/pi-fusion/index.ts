@@ -39,7 +39,13 @@ import { FusionContractSchema } from "./contract/schema.ts";
 import { validateFusionCall } from "./contract/validate.ts";
 import { isDegradationRefusal, renderDegradationRefusal } from "./degradation.ts";
 import { registerFusionGuidance } from "./guidance.ts";
-import { type DegradationRefusal, type FanoutConfig, runFanout } from "./pool/fanout.ts";
+import { type CooldownStore, createCooldownStore, defaultClock } from "./pool/cooldown.ts";
+import {
+  type CooldownDeps,
+  type DegradationRefusal,
+  type FanoutConfig,
+  runFanout,
+} from "./pool/fanout.ts";
 import { registerLeadRestrictions } from "./restrictions.ts";
 import { renderFanoutText, summarizeFanout } from "./result.ts";
 import { isSeamAvailable } from "./seam/availability.ts";
@@ -68,7 +74,9 @@ import {
 export const FUSION_TOOL_NAME = "fusion_delegate";
 export { fusionFooterText } from "./session-state.ts";
 
-/** Injection points for tests; production uses the pi agent dir defaults. */
+/**
+ * Injection points for tests; production uses the pi agent dir defaults.
+ */
 export interface FusionExtensionOptions {
   /** Override the fusion.json path; defaults to `~/.pi/agent/fusion.json`. */
   configPath?: string;
@@ -80,7 +88,24 @@ export interface FusionExtensionOptions {
   projectConfigDir?: string;
   /** Override the agents root the worker installs into; defaults to `~/.pi/agent`. */
   agentDir?: string;
+  /**
+   * Test-only seam: the cooldown store instead of this module's process singleton.
+   * Production never passes one, so a cooldown lives for the whole pi process
+   * (design D1: across `fusion_delegate` calls and `/fusion on|off`, reset by a
+   * restart).
+   */
+  cooldownStore?: CooldownStore;
 }
+
+/**
+ * The process-wide cooldown singleton (design D1, the `warnedOnce` pattern in
+ * config.ts): module-level, so it lives exactly as long as the extension module
+ * does — across `fusion_delegate` calls and `/fusion on|off` toggles — and a pi
+ * restart reloads the module and with it drops every cooldown. The pool reads it
+ * through `FanoutDeps.cooldowns` and `/fusion status` (task 2.3) reads the same
+ * store, which is what makes a quota wall on one model visible to the next call.
+ */
+export const productionCooldownStore: CooldownStore = createCooldownStore();
 
 type ToolResult = Awaited<ReturnType<ToolDefinition["execute"]>>;
 type PiUsage = NonNullable<ToolResult["usage"]>;
@@ -126,6 +151,7 @@ async function runFusionDelegate(
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
   originalRequest: string | undefined,
+  cooldowns: CooldownDeps,
 ): Promise<ToolResult> {
   const validation = validateFusionCall(params);
   if (!validation.ok) {
@@ -165,6 +191,7 @@ async function runFusionDelegate(
       }),
     ...(abort !== undefined ? { signal: abort } : {}),
     ...(originalRequest !== undefined ? { originalRequest } : {}),
+    cooldowns,
   });
   if (isDegradationRefusal(outcome)) {
     // FR-009: the whole call is refused before any worker starts.
@@ -183,8 +210,14 @@ async function runFusionDelegate(
 export function registerFusionDelegate(
   pi: ExtensionAPI,
   config: FanoutConfig | (() => FanoutConfig),
+  options: FusionExtensionOptions = {},
 ): void {
   const readConfig = typeof config === "function" ? config : () => config;
+  // D1 production wiring: the process singleton plus the wall-clock source.
+  const cooldowns: CooldownDeps = {
+    store: options.cooldownStore ?? productionCooldownStore,
+    clock: defaultClock,
+  };
   // The operator's request that started the run (atomic-agent
   // `pickOriginalRequest` precedent): every worker brief quotes it as
   // context, because a brief is a summary and thin summaries lose the job.
@@ -225,7 +258,7 @@ export function registerFusionDelegate(
     outputSchema: FanoutResultSchema,
     exposure: "direct",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runFusionDelegate(pi, readConfig(), params, signal, ctx, originalRequest);
+      return runFusionDelegate(pi, readConfig(), params, signal, ctx, originalRequest, cooldowns);
     },
   });
   pi.on("session_start", (event, ctx) => {
@@ -350,6 +383,13 @@ function makeFusionCommandDeps(
     },
     getActivation: () => getSessionActivation(sessionManager as never),
     setActivation: (value) => setSessionEnabled(pi, sessionManager as never, value),
+    // D6 (fusion-model-cooldown): the status reads the SAME process singleton the
+    // pool cools models into — the effective rotation and the wall clock — so a
+    // quota wall on a model is visible to the operator the moment it happens.
+    cooldowns: () => {
+      const rotation = readEffective(options).config.workerModels;
+      return productionCooldownStore.activeCooldowns(rotation, defaultClock.now());
+    },
     appendEntry: (type, data) => pi.appendEntry(type, data),
     sessionManager: sessionManager as never,
   };
@@ -364,7 +404,7 @@ export default function fusionExtension(
   pi: ExtensionAPI,
   options: FusionExtensionOptions = {},
 ): void {
-  registerFusionDelegate(pi, () => readEffective(options).config);
+  registerFusionDelegate(pi, () => readEffective(options).config, options);
   registerFusionGuidance(pi, (ctx) => {
     const { config } = readEffective(options);
     const sm = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;

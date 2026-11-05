@@ -23,7 +23,11 @@ import { dirname, join } from "node:path";
 import type { FanoutConfig } from "./pool/fanout.ts";
 import { RESEARCHER_WEB_MODES, type ResearcherWebMode } from "./types.ts";
 
-/** Editable operator configuration, persisted as the pi agent dir's `fusion.json`. */
+/**
+ * Editable operator configuration, persisted as the pi agent dir's `fusion.json`.
+ * It extends the pool's `FanoutConfig`, so every field the pool reads is also
+ * a field the operator can set, layer and reset (openspec fusion-project-config).
+ */
 export interface FusionConfig extends FanoutConfig {
   /** Delegate actions wait for explicit lead approval before workers run. */
   requireApproval: boolean;
@@ -55,6 +59,8 @@ export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   workers: 3,
   maxParallel: 3,
   taskTimeoutMs: 600_000,
+  // openspec fusion-model-cooldown D5: the fallback cooldown length, 5 minutes.
+  modelCooldownMs: 300_000,
   workerModels: frozenList([]),
   maxSteps: 60,
   requireApproval: true,
@@ -74,6 +80,10 @@ export const FUSION_CONFIG_BOUNDS = {
   workers: { min: 1, max: Number.MAX_SAFE_INTEGER },
   maxParallel: { min: 1, max: 8 },
   taskTimeoutMs: { min: 30_000, max: 3_600_000 },
+  // D5 (fusion-model-cooldown): the cooldown fallback bounds, which the pool
+  // clamps a retry-after time to as well (pool/fanout.ts mirrors these bounds —
+  // `config.test.ts` pins the two against each other so they cannot drift).
+  modelCooldownMs: { min: 30_000, max: 3_600_000 },
   maxSteps: { min: 1, max: 10_000 },
 } as const;
 
@@ -165,6 +175,7 @@ function snapshot(config: FusionConfig): Readonly<FusionConfig> {
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,
+    modelCooldownMs: config.modelCooldownMs,
     workerModels: frozenList(config.workerModels),
     maxSteps: config.maxSteps,
     requireApproval: config.requireApproval,
@@ -247,6 +258,7 @@ function readFields(
     workers: number("workers", FUSION_CONFIG_BOUNDS.workers),
     maxParallel: number("maxParallel", FUSION_CONFIG_BOUNDS.maxParallel),
     taskTimeoutMs: number("taskTimeoutMs", FUSION_CONFIG_BOUNDS.taskTimeoutMs),
+    modelCooldownMs: number("modelCooldownMs", FUSION_CONFIG_BOUNDS.modelCooldownMs),
     workerModels: list("workerModels"),
     maxSteps: number("maxSteps", FUSION_CONFIG_BOUNDS.maxSteps),
     requireApproval: flag("requireApproval"),
@@ -371,6 +383,7 @@ export function persistFusionConfig(
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,
+    modelCooldownMs: config.modelCooldownMs,
     workerModels: [...config.workerModels],
     maxSteps: config.maxSteps,
     requireApproval: config.requireApproval,

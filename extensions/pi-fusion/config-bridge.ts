@@ -11,7 +11,9 @@
  * and the retired `enabled` field in fusion.json is ignored (config.ts warns).
  * The read itself is config.ts `loadEffectiveConfig`; this module keeps only the
  * six fields the fan-out and the guidance need, so the bridge tests and the
- * production read cannot drift apart. It carries no origins (design D7).
+ * production read cannot drift apart. It carries no origins (design D7). The
+ * snapshot grew from six to seven fields with fusion-model-cooldown D5, which
+ * added `modelCooldownMs`.
  */
 
 import { defaultFusionConfigPath, loadEffectiveConfig } from "./config.ts";
@@ -28,11 +30,12 @@ export interface FusionConfig extends FanoutConfig {
   researcherWeb: ResearcherWebMode;
 }
 
-/** Design defaults: workers 3, maxParallel 3, taskTimeoutMs 600000, maxSteps 60, no models. */
+/** Design defaults: workers 3, maxParallel 3, taskTimeoutMs 600000, modelCooldownMs 300000, maxSteps 60, no models. */
 export const FUSION_CONFIG_DEFAULTS: Readonly<FusionConfig> = Object.freeze({
   workers: 3,
   maxParallel: 3,
   taskTimeoutMs: 600_000,
+  modelCooldownMs: 300_000,
   workerModels: [],
   maxSteps: 60,
   researcherWeb: "none",
@@ -54,6 +57,7 @@ export function readFusionConfig(
     workers: config.workers,
     maxParallel: config.maxParallel,
     taskTimeoutMs: config.taskTimeoutMs,
+    modelCooldownMs: config.modelCooldownMs,
     workerModels: [...config.workerModels],
     maxSteps: config.maxSteps,
     researcherWeb: config.researcherWeb,

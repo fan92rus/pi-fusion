@@ -144,6 +144,18 @@ describe("renderBrief original request (mechanical quote)", () => {
     expect(brief.indexOf("ORIGINAL REQUEST")).toBeLessThan(brief.indexOf("## Fix the thing"));
   });
 
+  it("labels the quote as the operator's language the worker may not know, and says the task is in English and self-contained (brief-language)", () => {
+    const brief = renderBrief(task(), undefined, "Сделай игру");
+    const label = brief.split("\n")[0] ?? "";
+    expect(label).toContain("ORIGINAL REQUEST — context only; your task is below");
+    expect(label).toContain("operator's language");
+    expect(label).toContain("which you may not know");
+    expect(label).toContain("TASK below restates everything you need in English");
+    expect(label).toContain("self-contained");
+    // The quoted body stays verbatim.
+    expect(brief).toContain("---\nСделай игру\n---");
+  });
+
   it("omits the block entirely when no request was captured", () => {
     expect(renderBrief(task())).toBe("## Fix the thing\n\nDo the thing.");
     expect(renderBrief(task(), undefined, "")).toBe("## Fix the thing\n\nDo the thing.");

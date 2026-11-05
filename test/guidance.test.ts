@@ -77,6 +77,28 @@ describe("fusion guidance section", () => {
     expect(section).not.toContain("\n\n");
   });
 
+  it("requires the task text fields and provides[].shape in English, with a literal-strings exception (brief-language)", () => {
+    const line = buildFusionSection(twoModels)
+      .split("\n")
+      .find((text) => text.startsWith("- Write every task's"));
+    expect(line).toBeDefined();
+    expect(line).toContain("`instructions`, `title`, `deliverable`");
+    expect(line).toContain("`contract.provides[].shape`");
+    expect(line).toContain("in English");
+    expect(line).toContain("whatever language the operator used");
+    expect(line).toContain(
+      "Keep paths, file names, identifiers, commands and other literal strings as-is",
+    );
+    expect(line).toContain("untransliterated");
+  });
+
+  it("places the English-fields line right after the role line (brief-language, design D1)", () => {
+    const lines = buildFusionSection(twoModels).split("\n");
+    const roleIndex = lines.findIndex((text) => text.startsWith("- Tasks carry a `role`:"));
+    expect(roleIndex).toBeGreaterThan(-1);
+    expect(lines[roleIndex + 1]).toMatch(/^- Write every task's /);
+  });
+
   it("states the roles and when to send each (design §7)", () => {
     const section = buildFusionSection(twoModels);
     expect(section).toContain("`worker` (implementation — the default");

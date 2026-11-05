@@ -77,6 +77,8 @@ Input: 1..16 tasks (`id`, `title`, `instructions`, `deliverable?`, `files?`,
 refused, render > 8 000 chars = refusal, `no_changes` requires empty
 `filesChanged`).
 
+Task fields (`instructions`, `title`, `deliverable`, `contract.provides[].shape`) are written in English; the operator's quoted request stays verbatim in its own language, labelled as such in the brief.
+
 Output (`structuredContent` + text table): one row per task, in task order —
 `status` (`done` / `failed` / `cancelled` / `needs_orchestrator` /
 `structured_output_failed` …), `summary`, `filesChanged`, `evidence`,

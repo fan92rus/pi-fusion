@@ -49,7 +49,7 @@ export function quoteOriginalRequest(request: string): string {
   const last = clipped.charCodeAt(clipped.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) clipped = clipped.slice(0, -1);
   const lines = [
-    "ORIGINAL REQUEST — context only; your task is below. This is the operator's job, which the lead split across several workers. Use it for the names, formats, constraints and look your part must agree with, and do only your TASK.",
+    "ORIGINAL REQUEST — context only; your task is below. This is the operator's job, which the lead split across several workers. Use it for the names, formats, constraints and look your part must agree with, and do only your TASK. The quote is in the operator's language, which you may not know; your TASK below restates everything you need in English and is self-contained.",
     "---",
     clipped,
     "---",

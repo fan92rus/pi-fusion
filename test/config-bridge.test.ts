@@ -21,8 +21,14 @@ describe("config-bridge readFusionConfig", () => {
     return path;
   };
 
+  // The global-layer tests always pass `dir` as projectDir: an omitted project
+  // directory falls back to process.cwd(), which is the repo root under vitest,
+  // and the repo's gitignored machine-local .pi/fusion.json would leak into
+  // these otherwise global-only reads. `dir` is a fresh temp dir with no .pi/,
+  // so it is the overlay-free project layer these tests need.
+
   it("uses the design defaults when fusion.json is absent", () => {
-    const config = readFusionConfig(join(dir, "missing.json"));
+    const config = readFusionConfig(join(dir, "missing.json"), dir);
     expect(config).toEqual({
       workers: 3,
       maxParallel: 3,
@@ -46,7 +52,7 @@ describe("config-bridge readFusionConfig", () => {
         researcherWeb: "both",
       }),
     );
-    expect(readFusionConfig(path)).toEqual({
+    expect(readFusionConfig(path, dir)).toEqual({
       workers: 5,
       maxParallel: 4,
       taskTimeoutMs: 120_000,
@@ -57,7 +63,7 @@ describe("config-bridge readFusionConfig", () => {
   });
 
   it("ignores a legacy enabled field: the shared snapshot has no activation key", () => {
-    const config = readFusionConfig(write(JSON.stringify({ enabled: true, workers: 4 })));
+    const config = readFusionConfig(write(JSON.stringify({ enabled: true, workers: 4 })), dir);
     expect(config).not.toHaveProperty("enabled");
     expect(config.workers).toBe(4);
     expect(FUSION_CONFIG_DEFAULTS).not.toHaveProperty("enabled");
@@ -65,11 +71,11 @@ describe("config-bridge readFusionConfig", () => {
 
   it("keeps the default for each field that is missing or ill-typed", () => {
     const path = write(JSON.stringify({ workers: "many", maxSteps: 0, workerModels: [""] }));
-    expect(readFusionConfig(path)).toEqual(FUSION_CONFIG_DEFAULTS);
+    expect(readFusionConfig(path, dir)).toEqual(FUSION_CONFIG_DEFAULTS);
   });
 
   it("falls back to the defaults when the file is not valid JSON", () => {
-    expect(readFusionConfig(write("{ not json"))).toEqual(FUSION_CONFIG_DEFAULTS);
+    expect(readFusionConfig(write("{ not json"), dir)).toEqual(FUSION_CONFIG_DEFAULTS);
   });
 
   describe("the project layer (design D7: delegates to loadEffectiveConfig)", () => {
@@ -128,10 +134,10 @@ describe("config-bridge readFusionConfig", () => {
   });
 
   it("returns a frozen snapshot that does not share state with the defaults", () => {
-    const config = readFusionConfig(join(dir, "missing.json"));
+    const config = readFusionConfig(join(dir, "missing.json"), dir);
     expect(Object.isFrozen(config)).toBe(true);
     config.workerModels.push("leaked");
-    expect(readFusionConfig(join(dir, "missing.json")).workerModels).toEqual([]);
+    expect(readFusionConfig(join(dir, "missing.json"), dir).workerModels).toEqual([]);
     expect(FUSION_CONFIG_DEFAULTS.workerModels).toEqual([]);
   });
 });
